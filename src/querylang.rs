@@ -116,6 +116,10 @@ impl CostProperties {
         }
     }
 
+    fn is_top(&self) -> bool {
+        *self == Self::top()
+    }
+
     fn top() -> Self {
         Self {
             tables: HashSet::new(),
@@ -220,6 +224,11 @@ impl Catalog {
 /// For all cost computations, we use a saturating operation to avoid overflow.
 impl Catalog {
     pub fn op_cost(&self, enode: &QueryLang, args: &[CostProperties]) -> CostProperties {
+        // Top is absorbing: if any argument is top, so is the result
+        if args.iter().any(|a| a.is_top()) {
+            return CostProperties::top();
+        }
+
         match (enode, args) {
             // Names load row info from the catalog
             (QueryLang::Name(name), []) => {
@@ -256,6 +265,10 @@ impl Catalog {
             // Tables keep the info loaded from the table name, but do not compute a cost yet
             (QueryLang::Table(_), [t]) => {
                 let table_cost = t.clone();
+                // Ensure we got a table name, otherwise go to top
+                if table_cost.tables.len() != 1 {
+                    return CostProperties::top();
+                }
                 CostProperties {
                     tables: table_cost.tables.clone(),
                     cols: HashSet::new(),
@@ -291,7 +304,9 @@ impl Catalog {
             // We accumulate the cost of reading all the rows in our input, and maintain all other properties
             (QueryLang::SeqScan(_), [t]) => {
                 let mut scan_cost = t.clone();
-                scan_cost.cost += scan_cost.rows.saturating_mul(READ_COST); // Cost is proportional to the number of rows in the table
+                scan_cost.cost = scan_cost
+                    .cost
+                    .saturating_add(scan_cost.rows.saturating_mul(READ_COST)); // Cost is proportional to the number of rows in the table
                 scan_cost
             }
             // IndexScan is a physical operator that has a cost based on the number of rows in the input, assuming the index is materialized
@@ -303,14 +318,18 @@ impl Catalog {
                     CostProperties::top()
                 } else {
                     if index_cost.materialized {
-                        index_cost.cost += index_cost.rows.saturating_mul(READ_COST); // Cost is proportional to the number of rows in the table
+                        index_cost.cost = index_cost
+                            .cost
+                            .saturating_add(index_cost.rows.saturating_mul(READ_COST)); // Cost is proportional to the number of rows in the table
                     } else {
                         // Manually create the index and add the cost of materializing it to the cost of the index scan
                         index_cost.materialized = true;
-                        index_cost.cost += index_cost
-                            .rows
-                            .saturating_mul(READ_COST)
-                            .saturating_mul(index_cost.rows);
+                        index_cost.cost = index_cost.cost.saturating_add(
+                            index_cost
+                                .rows
+                                .saturating_mul(READ_COST)
+                                .saturating_mul(index_cost.rows),
+                        );
                     }
                     index_cost
                 }
@@ -340,7 +359,9 @@ impl Catalog {
                     cost: left_cost.cost.saturating_add(right_cost.cost),
                 };
                 // Cost = cost of left + cost of right + cost of reading all rows in the result
-                join_cost.cost += join_cost.rows.saturating_mul(READ_COST); // Cost is proportional to the number of rows in the result
+                join_cost.cost = join_cost
+                    .cost
+                    .saturating_add(join_cost.rows.saturating_mul(READ_COST)); // Cost is proportional to the number of rows in the result
                 join_cost
             }
             (QueryLang::MergeSortJoin(_), [left, right, cols]) => {
@@ -387,10 +408,12 @@ impl Catalog {
                     cost: left_cost.cost.saturating_add(right_cost.cost),
                 };
                 // Cost = cost of left + cost of right + cost of reading all rows in left and right child once each
-                join_cost.cost += left_cost
-                    .rows
-                    .saturating_add(right_cost.rows)
-                    .saturating_mul(READ_COST);
+                join_cost.cost = join_cost.cost.saturating_add(
+                    left_cost
+                        .rows
+                        .saturating_add(right_cost.rows)
+                        .saturating_mul(READ_COST),
+                );
                 join_cost
             }
             (QueryLang::ExhaustiveSelect(_), [t, cols]) => {
@@ -410,7 +433,9 @@ impl Catalog {
                     cost: table_cost.cost,
                 };
                 // Cost = cost of reading all rows in the input table once
-                select_cost.cost += table_cost.rows.saturating_mul(READ_COST);
+                select_cost.cost = select_cost
+                    .cost
+                    .saturating_add(table_cost.rows.saturating_mul(READ_COST));
                 select_cost
             }
             (QueryLang::SortSelect(_), [t, cols]) => {
@@ -439,14 +464,18 @@ impl Catalog {
                 if select_cost
                     .index
                     .as_ref()
-                    .map_or(true, |idx| !idx.starts_with(&col_prefix))
+                    .map_or(false, |idx| idx.starts_with(&col_prefix))
                 {
                     // If the input is sorted by an index that matches the selection predicate, we can scan only a fraction of the rows
-                    select_cost.cost += ((table_cost.rows as f64 * SORT_SELECTION_FACTOR) as usize)
-                        .saturating_mul(READ_COST);
+                    select_cost.cost = select_cost.cost.saturating_add(
+                        ((table_cost.rows as f64 * SORT_SELECTION_FACTOR) as usize)
+                            .saturating_mul(READ_COST),
+                    );
                 } else {
                     // If the input is not sorted by an index that matches the selection predicate, we have to scan all rows
-                    select_cost.cost += table_cost.rows.saturating_mul(READ_COST);
+                    select_cost.cost = select_cost
+                        .cost
+                        .saturating_add(table_cost.rows.saturating_mul(READ_COST));
                 }
 
                 select_cost
@@ -471,5 +500,331 @@ impl CostFunction<QueryLang> for Catalog {
     {
         let args: Vec<CostProperties> = enode.children().iter().map(|&c| costs(c)).collect();
         self.op_cost(enode, &args)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::cmp::Ordering::*;
+    use std::panic::{AssertUnwindSafe, catch_unwind};
+
+    /// A cost with only the ordered properties set
+    fn c(materialized: bool, index: Option<&str>, cost: usize) -> CostProperties {
+        CostProperties::new(
+            HashSet::new(),
+            HashSet::new(),
+            0,
+            index.map(String::from),
+            materialized,
+            cost,
+        )
+    }
+
+    fn is_top(c: &CostProperties) -> bool {
+        *c == CostProperties::top() && c.rows == usize::MAX
+    }
+
+    /// Every combination of materialized x index x cost over a small domain
+    fn domain() -> Vec<CostProperties> {
+        let mut out = vec![];
+        for m in [false, true] {
+            for i in [None, Some("a"), Some("b")] {
+                for k in [0, 1, 2] {
+                    out.push(c(m, i, k));
+                }
+            }
+        }
+        out
+    }
+
+    // ---------- Partial ordering ----------
+
+    #[test]
+    fn order_single_property() {
+        let base = c(false, None, 5);
+        assert!(c(true, None, 5) < base, "materialized is preferred");
+        assert!(c(false, Some("a"), 5) < base, "sorted is preferred");
+        assert!(c(false, None, 1) < base, "cheaper is preferred");
+        assert_eq!(base.partial_cmp(&c(false, None, 5)), Some(Equal));
+    }
+
+    #[test]
+    fn order_multiple_properties() {
+        let base = c(false, None, 5);
+        assert!(c(true, Some("a"), 1) < base, "better on every property");
+        assert!(c(true, None, 1) < base, "better on some, equal on the rest");
+        assert!(base > c(true, None, 1));
+        assert_eq!(
+            c(true, None, 9).partial_cmp(&base),
+            None,
+            "trade-off is incomparable"
+        );
+        assert_eq!(c(false, Some("a"), 9).partial_cmp(&base), None);
+        assert_eq!(
+            c(true, Some("a"), 0).partial_cmp(&c(false, Some("b"), 9)),
+            None,
+            "different indexes are incomparable"
+        );
+    }
+
+    #[test]
+    fn order_ignores_unordered_properties() {
+        let mut a = c(true, None, 3);
+        a.tables.insert("T".into());
+        a.rows = 42;
+        assert_eq!(a.partial_cmp(&c(true, None, 3)), Some(Equal));
+        assert_eq!(a, c(true, None, 3));
+    }
+
+    #[test]
+    fn order_laws() {
+        let d = domain();
+        for a in &d {
+            assert_eq!(a.partial_cmp(a), Some(Equal), "reflexive: {a:?}");
+            for b in &d {
+                let ab = a.partial_cmp(b);
+                assert_eq!(
+                    ab,
+                    b.partial_cmp(a).map(|o| o.reverse()),
+                    "antisymmetric: {a:?} {b:?}"
+                );
+                assert_eq!(ab == Some(Equal), a == b, "consistent with eq: {a:?} {b:?}");
+                for x in &d {
+                    if a < b && b < x {
+                        assert!(a < x, "transitive: {a:?} < {b:?} < {x:?}");
+                    }
+                }
+            }
+        }
+    }
+
+    // ---------- Cost function ----------
+
+    fn id() -> Id {
+        Id::from(0usize)
+    }
+
+    fn catalog() -> Catalog {
+        Catalog::new()
+            .with_table("A".into(), 100)
+            .with_table("B".into(), 10)
+            .with_index("A".into(), "x".into())
+    }
+
+    fn name(cat: &Catalog, n: &str) -> CostProperties {
+        cat.op_cost(&QueryLang::Name(n.into()), &[])
+    }
+
+    fn table(cat: &Catalog, n: &str) -> CostProperties {
+        cat.op_cost(&QueryLang::Table([id()]), &[name(cat, n)])
+    }
+
+    fn index(cat: &Catalog, t: &str, col: &str) -> CostProperties {
+        cat.op_cost(
+            &QueryLang::Index([id(); 2]),
+            &[name(cat, t), name(cat, col)],
+        )
+    }
+
+    /// Every physical operator paired with a valid (non-top) set of arguments
+    fn valid_cases(cat: &Catalog) -> Vec<(QueryLang, Vec<CostProperties>)> {
+        let (tbl, col, idx) = (table(cat, "A"), name(cat, "x"), index(cat, "A", "x"));
+        vec![
+            (QueryLang::Column([id()]), vec![col.clone()]),
+            (QueryLang::Table([id()]), vec![name(cat, "A")]),
+            (
+                QueryLang::Index([id(); 2]),
+                vec![name(cat, "A"), col.clone()],
+            ),
+            (QueryLang::SeqScan([id()]), vec![tbl.clone()]),
+            (QueryLang::IndexScan([id()]), vec![idx.clone()]),
+            (
+                QueryLang::NestedLoopJoin([id(); 3]),
+                vec![tbl.clone(), tbl.clone(), col.clone()],
+            ),
+            (
+                QueryLang::MergeSortJoin([id(); 3]),
+                vec![idx.clone(), idx.clone(), col.clone()],
+            ),
+            (
+                QueryLang::ExhaustiveSelect([id(); 2]),
+                vec![tbl.clone(), col.clone()],
+            ),
+            (
+                QueryLang::SortSelect([id(); 2]),
+                vec![idx.clone(), col.clone()],
+            ),
+        ]
+    }
+
+    #[test]
+    fn cost_values() {
+        let cat = catalog();
+        let (a, b, x) = (table(&cat, "A"), table(&cat, "B"), name(&cat, "x"));
+        let op = |n: QueryLang, args: &[CostProperties]| cat.op_cost(&n, args);
+
+        let seq = op(QueryLang::SeqScan([id()]), &[a.clone()]);
+        assert_eq!((seq.cost, seq.rows), (100, 100));
+
+        // Materialized index: read every row; unmaterialized: pay rows^2 to build it
+        let iscan = op(QueryLang::IndexScan([id()]), &[index(&cat, "A", "x")]);
+        assert_eq!((iscan.cost, iscan.materialized), (100, true));
+        let iscan = op(QueryLang::IndexScan([id()]), &[index(&cat, "B", "x")]); // 10 rows -> 10^2 to build
+        assert_eq!((iscan.cost, iscan.materialized), (100, true));
+        assert!(
+            is_top(&op(QueryLang::IndexScan([id()]), &[a.clone()])),
+            "no index"
+        );
+
+        let nl = op(
+            QueryLang::NestedLoopJoin([id(); 3]),
+            &[a.clone(), b.clone(), x.clone()],
+        );
+        assert_eq!((nl.rows, nl.cost), (1000, 1000));
+        assert_eq!(nl.tables, HashSet::from(["A".into(), "B".into()]));
+
+        let sorted = index(&cat, "A", "x");
+        let ms = op(
+            QueryLang::MergeSortJoin([id(); 3]),
+            &[sorted.clone(), sorted.clone(), x.clone()],
+        );
+        assert_eq!(
+            (ms.rows, ms.cost, ms.index.as_deref()),
+            (10000, 200, Some("x"))
+        );
+        assert!(
+            is_top(&op(
+                QueryLang::MergeSortJoin([id(); 3]),
+                &[a.clone(), sorted.clone(), x.clone()]
+            )),
+            "unsorted input"
+        );
+
+        let xs = op(
+            QueryLang::ExhaustiveSelect([id(); 2]),
+            &[a.clone(), x.clone()],
+        );
+        assert_eq!((xs.rows, xs.cost), (10, 100));
+
+        // Sorting on the predicate column lets SortSelect scan only a fraction of the rows
+        let ss_sorted = op(
+            QueryLang::SortSelect([id(); 2]),
+            &[sorted.clone(), x.clone()],
+        );
+        let ss_unsorted = op(QueryLang::SortSelect([id(); 2]), &[a.clone(), x.clone()]);
+        assert_eq!(ss_sorted.cost, 50, "sorted input scans half the rows");
+        assert_eq!(ss_unsorted.cost, 100, "unsorted input scans every row");
+    }
+
+    #[test]
+    fn cost_rejects_ill_typed_arguments() {
+        let cat = catalog();
+        let (col, tname) = (name(&cat, "x"), name(&cat, "A"));
+        assert!(
+            is_top(&cat.op_cost(&QueryLang::Column([id()]), &[tname.clone()])),
+            "Column of a table name"
+        );
+        assert!(
+            is_top(&cat.op_cost(&QueryLang::Table([id()]), &[col.clone()])),
+            "Table of a column name"
+        );
+        assert!(
+            is_top(&cat.op_cost(&QueryLang::Index([id(); 2]), &[col.clone(), tname.clone()])),
+            "Index with swapped arguments"
+        );
+    }
+
+    #[test]
+    fn logical_operators_are_top() {
+        let cat = catalog();
+        let t = table(&cat, "A");
+        let x = name(&cat, "x");
+        assert!(is_top(&cat.op_cost(&QueryLang::Scan(id()), &[t.clone()])));
+        assert!(is_top(&cat.op_cost(
+            &QueryLang::Select([id(); 2]),
+            &[t.clone(), x.clone()]
+        )));
+        assert!(is_top(&cat.op_cost(
+            &QueryLang::Join([id(); 3]),
+            &[t.clone(), t.clone(), x.clone()]
+        )));
+    }
+
+    /// Runs `op_cost` on each case, collecting panics and failed checks instead of stopping at the first
+    fn check_cases(
+        cases: Vec<(String, QueryLang, Vec<CostProperties>)>,
+        check: impl Fn(&[CostProperties], &CostProperties) -> bool,
+    ) {
+        let cat = catalog();
+        let failures: Vec<String> = cases
+            .into_iter()
+            .filter_map(|(label, node, args)| {
+                match catch_unwind(AssertUnwindSafe(|| cat.op_cost(&node, &args))) {
+                    Err(_) => Some(format!("{label}: panicked")),
+                    Ok(r) if !check(&args, &r) => Some(format!("{label}: got {r:?}")),
+                    Ok(_) => None,
+                }
+            })
+            .collect();
+        assert!(
+            failures.is_empty(),
+            "{} failing cases:\n{}",
+            failures.len(),
+            failures.join("\n")
+        );
+    }
+
+    #[test]
+    fn valid_arguments_are_not_top() {
+        let cases = valid_cases(&catalog())
+            .into_iter()
+            .map(|(n, args)| (format!("{n}"), n, args))
+            .collect();
+        check_cases(cases, |_, r| !is_top(r));
+    }
+
+    #[test]
+    fn top_argument_propagates_top() {
+        // Replace each argument of each operator, in turn, with top
+        let mut cases = vec![];
+        for (node, args) in valid_cases(&catalog()) {
+            for i in 0..args.len() {
+                let mut args = args.clone();
+                args[i] = CostProperties::top();
+                cases.push((format!("{node} with arg {i} = top"), node.clone(), args));
+            }
+        }
+        check_cases(cases, |_, r| is_top(r));
+    }
+
+    #[test]
+    fn huge_arguments_do_not_overflow() {
+        // Non-top arguments close to the maximum must saturate, not panic
+        let mut cases = vec![];
+        for (node, args) in valid_cases(&catalog()) {
+            let huge: Vec<CostProperties> = args
+                .iter()
+                .map(|a| CostProperties {
+                    rows: usize::MAX - 1,
+                    cost: usize::MAX - 1,
+                    ..a.clone()
+                })
+                .collect();
+            cases.push((format!("{node} with huge args"), node, huge));
+        }
+        check_cases(cases, |_, _| true);
+    }
+
+    #[test]
+    fn egg_cost_function_matches_op_cost() {
+        let mut cat = catalog();
+        let node =
+            QueryLang::NestedLoopJoin([Id::from(0usize), Id::from(1usize), Id::from(2usize)]);
+        let args = [table(&cat, "A"), table(&cat, "B"), name(&cat, "x")];
+        let expected = cat.op_cost(&node, &args);
+        let got = cat.cost(&node, |i| args[usize::from(i)].clone());
+        assert_eq!(got, expected);
+        assert_eq!(got.rows, expected.rows);
     }
 }
