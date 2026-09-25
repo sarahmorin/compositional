@@ -46,16 +46,22 @@ impl FrontierAnalysis {
     }
 
     /// Merges another FrontierAnalysis into this one.
-    /// Returns true if the frontier was changed, false otherwise.
+    /// Returns DidMerge(self changed, result differs from other), as egg requires.
     fn merge(&mut self, other: Self) -> DidMerge {
-        let mut changed = false;
+        let mut inserted = 0;
+        let mut rejected = false;
         for multe_node in other.0 {
             if self.insert(multe_node) {
-                changed = true;
+                inserted += 1;
+            } else {
+                rejected = true;
             }
         }
-        // Conservative, assume if self changed then both changed
-        DidMerge(changed, changed)
+        // Entries of `other` are mutually non-dominated, so none of them evicts another:
+        // every entry beyond the inserted ones is left over from the original `self`.
+        let kept_original = self.0.len() > inserted;
+        // Conservative: an entry of `other` rejected as equal to an existing one also counts as a difference
+        DidMerge(inserted > 0, rejected || kept_original)
     }
 }
 
@@ -113,11 +119,6 @@ impl Analysis<QueryLang> for FrontierAnalysis {
         // Merge the data from `from` into `to`.
         // Returns true if the frontier was changed, false otherwise.
         to.merge(from)
-    }
-
-    fn modify(egraph: &mut EGraph<QueryLang, Self>, id: Id) {
-        // let data = egraph[id].data.clone();
-        // egraph[id].data = data;
     }
 }
 
@@ -243,6 +244,67 @@ mod tests {
         let mut g = frontier(&a);
         assert!(!g.merge(frontier(&[c(false, None, 9)])).0);
         assert_eq!(costs(&g), a.to_vec());
+    }
+
+    #[test]
+    fn merge_flags() {
+        let (cheap, dear) = (c(true, None, 1), c(true, None, 9));
+        let (sorted, other) = (c(false, Some("a"), 5), c(false, Some("b"), 5));
+        let flags = |to: &[CostProperties], from: &[CostProperties]| {
+            let d = frontier(to).merge(frontier(from));
+            (d.0, d.1)
+        };
+        assert_eq!(
+            flags(&[cheap.clone()], &[dear.clone()]),
+            (false, true),
+            "result differs from `from`"
+        );
+        assert_eq!(
+            flags(&[dear.clone()], &[cheap.clone()]),
+            (true, false),
+            "result is `from`"
+        );
+        assert_eq!(
+            flags(&[sorted.clone()], &[other.clone()]),
+            (true, true),
+            "incomparable: both change"
+        );
+        assert_eq!(flags(&[], &[cheap.clone()]), (true, false));
+        assert_eq!(flags(&[cheap.clone()], &[]), (false, true));
+        assert_eq!(
+            flags(&[dear.clone(), sorted.clone()], &[cheap.clone()]),
+            (true, true),
+            "one original survives"
+        );
+    }
+
+    #[test]
+    fn union_repairs_parents_of_absorbed_class() {
+        // The cheap class has more parents, so egg keeps it and absorbs the expensive class. The parent
+        // of the expensive class must still be recomputed with the cheaper argument.
+        let cat = Catalog::new()
+            .with_table("A".into(), 100)
+            .with_table("A2".into(), 100);
+        let mut eg: EGraph<QueryLang, FrontierAnalysis> = EGraph::new(FrontierAnalysis::new(cat));
+        let col = |eg: &mut EGraph<QueryLang, FrontierAnalysis>, n: &str| {
+            let n = eg.add(QueryLang::Name(n.into()));
+            eg.add(QueryLang::Column([n]))
+        };
+        let (cx, cy, cz) = (col(&mut eg, "x"), col(&mut eg, "y"), col(&mut eg, "z"));
+        let a = eg.add(QueryLang::Name("A".into()));
+        let cheap = eg.add(QueryLang::Table([a])); // cost 0
+        eg.add(QueryLang::ExhaustiveSelect([cheap, cy]));
+        eg.add(QueryLang::ExhaustiveSelect([cheap, cz]));
+        let a2 = eg.add(QueryLang::Name("A2".into()));
+        let ta2 = eg.add(QueryLang::Table([a2]));
+        let dear = eg.add(QueryLang::SeqScan([ta2])); // cost 100
+        let parent = eg.add(QueryLang::ExhaustiveSelect([dear, cx])); // cost 100 + 100
+        assert_eq!(eg[parent].data.0[0].cost.cost, 200);
+
+        eg.union(cheap, dear);
+        eg.rebuild();
+        let parent = eg.find(parent);
+        assert_eq!(costs(&eg[parent].data), vec![c(false, None, 100)]);
     }
 
     #[test]

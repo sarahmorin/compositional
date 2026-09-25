@@ -132,8 +132,6 @@ impl CostProperties {
     }
 }
 
-// TODO: Test this partial ordering and make sure it is correct.
-
 #[derive(Debug, Clone)]
 pub struct Catalog {
     tables: HashMap<String, usize>,     // Map from table name to row count
@@ -486,8 +484,6 @@ impl Catalog {
         }
     }
 }
-
-// TODO: Test the cost function
 
 /// Adapter for egg's extraction infrastructure: looks up each child's cost with the cost function
 /// that egg provides, in argument order, and delegates to [`Catalog::op_cost`].
