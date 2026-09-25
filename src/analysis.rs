@@ -10,8 +10,11 @@ use egg::*;
 /// at least as good as the threshold gives this node a cost at least as good as `cost`.
 ///
 /// `rank` is the derivation depth: leaves have rank 0, and any other node has one more than the highest
-/// rank among the argument entries it was computed from. Every threshold is met by an entry of the argument
-/// class with a strictly lower rank (see `insert`), so extraction by decreasing rank always terminates.
+/// rank among the argument entries it was computed from. Rank breaks ties in scalar cost: every threshold is
+/// met by an entry of the argument class that either has a strictly lower scalar cost than the threshold or
+/// has a strictly lower rank than this node (see `covers`). Since the scalar cost of a node is never lower
+/// than that of any of its arguments, extraction strictly decreases (scalar cost, rank) lexicographically at
+/// every step, so it always terminates, even on cyclic e-graphs.
 #[derive(Debug, Clone)]
 pub struct MulteNode<L: Language> {
     pub(crate) id: Id,
@@ -22,9 +25,11 @@ pub struct MulteNode<L: Language> {
 }
 
 impl MulteNode<QueryLang> {
-    /// Rank-aware dominance: at least as good a cost, reached by a derivation that is no deeper
+    /// Rank-aware dominance: at least as good a cost, and either a strictly lower scalar cost or a
+    /// derivation that is no deeper. Rank only matters between entries with the same scalar cost, which
+    /// is what happens around zero-cost cycles (e.g. X = IndexScan(X) over an empty table).
     fn covers(&self, other: &Self) -> bool {
-        self.cost <= other.cost && self.rank <= other.rank
+        self.cost <= other.cost && (self.cost.cost < other.cost.cost || self.rank <= other.rank)
     }
 }
 
@@ -37,13 +42,14 @@ impl FrontierAnalysis {
     }
 
     /// Inserts a new MulteNode into the frontier if it is not dominated by any existing node.
-    /// A node is dominated if there exists another node with a lower or equal cost and a lower or equal rank.
+    /// A node is dominated if another node covers it (see `MulteNode::covers`).
     /// If the new node is inserted, any existing nodes that are dominated by it are removed.
     /// Returns true if the node was inserted, false otherwise.
     ///
-    /// Taking rank into account means an entry is only ever replaced by one that is at least as good and
-    /// no deeper, so every threshold stays satisfied by an entry of lower rank than the node that set it.
-    /// A cheaper but deeper entry (e.g. one derived through a cycle back into this class) is kept alongside.
+    /// An entry is only ever replaced by one that covers it, and covering is transitive, so every threshold
+    /// stays met by an entry with either a lower scalar cost than the threshold or a lower rank than the node
+    /// that set it. An entry that is better but has the same scalar cost and a greater rank (e.g. one derived
+    /// through a zero-cost cycle back into this class) is kept alongside the entry it would otherwise replace.
     fn insert(&mut self, multe_node: MulteNode<QueryLang>) -> bool {
         // Check if the new node is dominated by any existing node
         for existing in &self.0 {
@@ -244,21 +250,28 @@ mod tests {
 
     #[test]
     fn insert_is_rank_aware() {
-        // A cheaper but deeper entry does not replace a shallower one: both are kept
+        let ranks = |f: &FrontierAnalysis| {
+            f.0.iter()
+                .map(|m| (m.cost.cost, m.rank))
+                .collect::<Vec<_>>()
+        };
+        // A strictly cheaper entry replaces a dominated one regardless of rank
         let mut f = frontier(&[]);
         assert!(f.insert(mnr(c(false, None, 5), 1)));
         assert!(f.insert(mnr(c(false, None, 1), 3)));
+        assert_eq!(ranks(&f), vec![(1, 3)]);
+
+        // With the same scalar cost, a better but deeper entry is kept alongside the shallower one
+        let mut f = frontier(&[]);
+        assert!(f.insert(mnr(c(false, None, 5), 1)));
+        assert!(f.insert(mnr(c(true, None, 5), 2)));
         assert_eq!(f.0.len(), 2);
-        // A deeper entry that is no cheaper than a shallower one is rejected
-        assert!(!f.insert(mnr(c(false, None, 5), 2)));
-        // An entry that is at least as cheap and no deeper replaces both
-        assert!(f.insert(mnr(c(false, None, 1), 1)));
-        assert_eq!(
-            f.0.iter()
-                .map(|m| (m.cost.cost, m.rank))
-                .collect::<Vec<_>>(),
-            vec![(1, 1)]
-        );
+        // ...and one that is no worse and no deeper replaces both
+        assert!(f.insert(mnr(c(true, None, 5), 1)));
+        assert_eq!(ranks(&f), vec![(5, 1)]);
+
+        // A deeper entry with the same cost as a shallower one is rejected
+        assert!(!f.insert(mnr(c(true, None, 5), 2)));
     }
 
     #[test]

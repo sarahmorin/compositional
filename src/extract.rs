@@ -8,8 +8,9 @@ use egg::*;
 ///
 /// Each frontier entry is a plan template: an e-node plus a cost threshold for each argument. To extract
 /// an entry, we choose, for each argument, an entry of that argument's class that meets the threshold and
-/// has a strictly lower rank, and recurse. Since the cost function is monotone, the extracted plan costs
-/// at most the entry's cost, and since rank strictly decreases, extraction terminates even on cyclic e-graphs.
+/// either has a strictly lower scalar cost than the threshold or a strictly lower rank than the parent, and
+/// recurse. Since the cost function is monotone, the extracted plan costs at most the entry's cost, and since
+/// (scalar cost, rank) strictly decreases at every step, extraction terminates even on cyclic e-graphs.
 ///
 /// Each argument position is extracted independently, so the same class can get different plans in
 /// different positions and the result is a tree rather than a DAG.
@@ -60,8 +61,8 @@ impl<'a> FrontierExtractor<'a> {
         expr.add(node)
     }
 
-    /// Chooses an entry of `class` that meets `threshold` and has a rank below `rank`.
-    /// Among those, prefers the lowest rank, which gives the shallowest plan.
+    /// Chooses an entry of `class` that meets `threshold` and either has a strictly lower scalar cost than
+    /// `threshold` or a rank below `rank`. Among those, prefers the lowest rank, which gives the shallowest plan.
     fn choose(
         &self,
         class: Id,
@@ -73,9 +74,11 @@ impl<'a> FrontierExtractor<'a> {
             .data
             .0
             .iter()
-            .filter(|entry| entry.cost <= *threshold && entry.rank < rank)
+            .filter(|entry| {
+                entry.cost <= *threshold && (entry.cost.cost < threshold.cost || entry.rank < rank)
+            })
             .min_by_key(|entry| entry.rank)
-            .expect("frontier invariant violated: no lower-rank entry meets the threshold")
+            .expect("frontier invariant violated: no entry meets the threshold")
     }
 }
 

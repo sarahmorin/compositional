@@ -17,7 +17,7 @@ pub fn rules<N: Analysis<QueryLang>>() -> Vec<Rewrite<QueryLang, N>> {
         rewrite!("select-commute"; "(SELECT (SELECT ?t ?a) ?b)" => "(SELECT (SELECT ?t ?b) ?a)"),
         rewrite!("select-pushdown"; "(SELECT (JOIN ?a ?b ?p) ?c)" => "(JOIN (SELECT ?a ?c) ?b ?p)"),
         // Access paths: a sequential scan always works, and an index scan on the column a select or join uses
-        rewrite!("seq-scan"; "(SCAN (T- ?t))" => "(SEQ_SCAN ?t)"),
+        rewrite!("seq-scan"; "(SCAN (T- ?t))" => "(SEQ_SCAN (T- ?t))"),
         rewrite!("index-scan"; "(SCAN (I- ?t ?c))" => "(INDEX_SCAN (I- ?t ?c))"),
         rewrite!("select-index-scan";
             "(SELECT (SCAN (T- ?t)) (C- ?c))" => "(SELECT (INDEX_SCAN (I- ?t ?c)) (C- ?c))"),

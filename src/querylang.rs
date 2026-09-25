@@ -273,7 +273,9 @@ impl Catalog {
                     rows: table_cost.rows,
                     index: None,
                     materialized: true,
-                    cost: 0, // No cost for just referencing a table
+                    // No cost for just referencing a table, beyond the cost of the argument itself
+                    // (keeps the cost of a node at least the cost of each of its arguments)
+                    cost: table_cost.cost,
                 }
             }
             // Indexes keep the info loaded from the table name, but do not compute a cost yet and check if they are, in fact, materialized
@@ -294,7 +296,9 @@ impl Catalog {
                         rows: table_cost.rows,
                         index: Some(col_cost.cols.iter().next().unwrap().clone()),
                         materialized: materialized,
-                        cost: 0, // No cost for just referencing a table
+                        // No cost for just referencing an index, beyond the cost of the arguments themselves
+                        // (keeps the cost of a node at least the cost of each of its arguments)
+                        cost: table_cost.cost.saturating_add(col_cost.cost),
                     }
                 }
             }

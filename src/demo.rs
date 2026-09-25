@@ -106,11 +106,8 @@ impl Demo {
         Report {
             name: self.name.clone(),
             query: self.query.clone(),
-            stop_reason: runner.stop_reason.clone(),
-            iterations: runner.iterations.len(),
-            nodes: egraph.total_number_of_nodes(),
-            classes: egraph.number_of_classes(),
-            plain_nodes: plain.egraph.total_number_of_nodes(),
+            plain: GraphStats::new(&plain),
+            frontier: GraphStats::new(&runner),
             saturate_plain,
             saturate_frontier,
             frontier_entries: sizes.iter().sum(),
@@ -136,16 +133,36 @@ fn time<T>(reps: usize, mut f: impl FnMut() -> T) -> (Duration, T) {
     (best, result.unwrap())
 }
 
+/// Size of a saturated e-graph and why saturation stopped
+pub struct GraphStats {
+    pub nodes: usize,
+    pub classes: usize,
+    pub iterations: usize,
+    pub stop_reason: StopReason,
+}
+
+impl GraphStats {
+    fn new<N: Analysis<QueryLang>>(runner: &Runner<QueryLang, N>) -> Self {
+        Self {
+            nodes: runner.egraph.total_number_of_nodes(),
+            classes: runner.egraph.number_of_classes(),
+            iterations: runner.iterations.len(),
+            stop_reason: runner.stop_reason.clone().unwrap(),
+        }
+    }
+}
+
 /// Statistics and extracted plans from running a [`Demo`]. Print it with `{}`.
+///
+/// The egg pipeline saturates without an analysis and then runs egg's extractor; the frontier pipeline
+/// saturates with the frontier analysis and then runs the frontier extractor.
 pub struct Report {
     pub name: String,
     pub query: RecExpr<QueryLang>,
-    pub stop_reason: Option<StopReason>,
-    pub iterations: usize,
-    pub nodes: usize,
-    pub classes: usize,
-    /// Size of the e-graph saturated without the analysis (should match `nodes`)
-    pub plain_nodes: usize,
+    /// E-graph saturated without the analysis
+    pub plain: GraphStats,
+    /// E-graph saturated with the frontier analysis (should match `plain`)
+    pub frontier: GraphStats,
     pub saturate_plain: Duration,
     pub saturate_frontier: Duration,
     /// Total number of frontier entries over all classes
@@ -164,66 +181,141 @@ pub struct Report {
 
 impl fmt::Display for Report {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        writeln!(f, "=== {} ===", self.name)?;
-        writeln!(f, "query:       {}", self.query)?;
+        let title = format!("── {} ", self.name);
+        writeln!(f, "{title:─<100}")?;
+        writeln!(f, "query  {}", self.query)?;
+        writeln!(f)?;
+
+        // E-graph sizes
         writeln!(
             f,
-            "e-graph:     {} nodes, {} classes after {} iterations ({:?})",
-            self.nodes,
-            self.classes,
-            self.iterations,
-            self.stop_reason.as_ref().unwrap()
+            "{:<10} {:>8} {:>8} {:>6}  {}",
+            "e-graph", "nodes", "classes", "iters", "stopped"
         )?;
-        writeln!(
-            f,
-            "saturation:  {:?} with frontier analysis, {:?} without ({} nodes)",
-            self.saturate_frontier, self.saturate_plain, self.plain_nodes
-        )?;
-        writeln!(
-            f,
-            "frontiers:   {} entries total, {:.1} per class on average, at most {}",
-            self.frontier_entries,
-            self.frontier_entries as f64 / self.classes as f64,
-            self.frontier_max
-        )?;
-        writeln!(
-            f,
-            "extraction:  frontier {:?} ({} plan{}), egg {:?} (1 plan)",
-            self.frontier_time,
-            self.frontier_plans.len(),
-            if self.frontier_plans.len() == 1 {
-                ""
-            } else {
-                "s"
-            },
-            self.egg_time
-        )?;
-        writeln!(f, "frontier plans:")?;
-        for (cost, plan) in &self.frontier_plans {
-            writeln!(f, "  {}  {}", fmt_cost(cost), plan)?;
+        for (label, g) in [("egg", &self.plain), ("frontier", &self.frontier)] {
+            writeln!(
+                f,
+                "{:<10} {:>8} {:>8} {:>6}  {:?}",
+                label,
+                sep(g.nodes),
+                sep(g.classes),
+                g.iterations,
+                g.stop_reason
+            )?;
         }
         writeln!(
             f,
-            "egg plan (covered by frontier: {}):",
-            if self.egg_covered { "yes" } else { "no" }
+            "frontier entries: {} total, {:.1} per class, at most {}",
+            sep(self.frontier_entries),
+            self.frontier_entries as f64 / self.frontier.classes as f64,
+            self.frontier_max
         )?;
-        writeln!(f, "  {}  {}", fmt_cost(&self.egg_plan.0), self.egg_plan.1)
+        writeln!(f)?;
+
+        // Timings
+        let egg_total = self.saturate_plain + self.egg_time;
+        let frontier_total = self.saturate_frontier + self.frontier_time;
+        writeln!(
+            f,
+            "{:<10} {:>11} {:>11} {:>11}",
+            "time", "saturate", "extract", "total"
+        )?;
+        for (label, saturate, extract, total) in [
+            ("egg", self.saturate_plain, self.egg_time, egg_total),
+            (
+                "frontier",
+                self.saturate_frontier,
+                self.frontier_time,
+                frontier_total,
+            ),
+        ] {
+            writeln!(
+                f,
+                "{:<10} {:>11} {:>11} {:>11}",
+                label,
+                fmt_duration(saturate),
+                fmt_duration(extract),
+                fmt_duration(total)
+            )?;
+        }
+        writeln!(
+            f,
+            "{:<10} {:>11} {:>11} {:>11}",
+            "ratio",
+            fmt_ratio(self.saturate_frontier, self.saturate_plain),
+            fmt_ratio(self.frontier_time, self.egg_time),
+            fmt_ratio(frontier_total, egg_total)
+        )?;
+        writeln!(f)?;
+
+        // Plans
+        writeln!(
+            f,
+            "{:<10} {:>13} {:>15} {:<10} {:<5} {}",
+            "plan", "cost", "rows", "sorted on", "mat", "expression"
+        )?;
+        for (cost, plan) in &self.frontier_plans {
+            writeln!(f, "{:<10} {} {}", "frontier", fmt_cost(cost), plan)?;
+        }
+        let covered = if self.egg_covered {
+            "covered by frontier"
+        } else {
+            "NOT covered by frontier"
+        };
+        writeln!(
+            f,
+            "{:<10} {} {}  ({covered})",
+            "egg",
+            fmt_cost(&self.egg_plan.0),
+            self.egg_plan.1
+        )
     }
 }
 
+/// Cost columns for the plan table: cost, rows, sort order and materialization
 fn fmt_cost(c: &CostProperties) -> String {
     if c.is_top() {
-        return format!("{:<52}", "top");
+        return format!("{:>13} {:>15} {:<10} {:<5}", "top", "", "", "");
     }
     format!(
-        "cost {:>9}  rows {:>9}  {:<14} {:<12}",
-        c.cost,
-        c.rows,
-        c.index
-            .as_ref()
-            .map_or("unsorted".into(), |i| format!("sorted {i}")),
-        if c.materialized { "materialized" } else { "" }
+        "{:>13} {:>15} {:<10} {:<5}",
+        sep(c.cost),
+        sep(c.rows),
+        c.index.as_deref().unwrap_or("-"),
+        if c.materialized { "yes" } else { "no" }
     )
+}
+
+/// A duration with a unit suited to its size, e.g. `12.3 µs` or `4.56 ms`
+fn fmt_duration(d: Duration) -> String {
+    let ns = d.as_nanos() as f64;
+    if ns < 1e3 {
+        format!("{ns:.0} ns")
+    } else if ns < 1e6 {
+        format!("{:.1} µs", ns / 1e3)
+    } else if ns < 1e9 {
+        format!("{:.2} ms", ns / 1e6)
+    } else {
+        format!("{:.2} s", ns / 1e9)
+    }
+}
+
+/// How many times longer `frontier` took than `egg`
+fn fmt_ratio(frontier: Duration, egg: Duration) -> String {
+    format!("{:.2}x", frontier.as_secs_f64() / egg.as_secs_f64())
+}
+
+/// A number with thousands separators, e.g. `1,000,000`
+fn sep(n: usize) -> String {
+    let digits = n.to_string();
+    let mut out = String::new();
+    for (i, d) in digits.chars().enumerate() {
+        if i > 0 && (digits.len() - i) % 3 == 0 {
+            out.push(',');
+        }
+        out.push(d);
+    }
+    out
 }
 
 /// egg's extractor needs a total order on costs (it panics on incomparable ones), so the baseline compares
