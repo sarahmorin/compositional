@@ -116,7 +116,7 @@ impl CostProperties {
         }
     }
 
-    fn is_top(&self) -> bool {
+    pub fn is_top(&self) -> bool {
         *self == Self::top()
     }
 

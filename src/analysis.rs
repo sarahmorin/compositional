@@ -5,40 +5,55 @@ use egg::*;
 
 /// MulteNodes are nodes whose arguments are annotated with cost properties.
 /// They are used to maintain a non-dominated frontier of nodes per e-class.
+///
+/// The argument costs are thresholds: choosing, for each argument, any entry of that class with a cost
+/// at least as good as the threshold gives this node a cost at least as good as `cost`.
+///
+/// `rank` is the derivation depth: leaves have rank 0, and any other node has one more than the highest
+/// rank among the argument entries it was computed from. Every threshold is met by an entry of the argument
+/// class with a strictly lower rank (see `insert`), so extraction by decreasing rank always terminates.
 #[derive(Debug, Clone)]
 pub struct MulteNode<L: Language> {
-    id: Id,
-    node: L,
-    args: Vec<(Id, CostProperties)>,
-    cost: CostProperties,
+    pub(crate) id: Id,
+    pub(crate) node: L,
+    pub(crate) args: Vec<(Id, CostProperties)>,
+    pub(crate) cost: CostProperties,
+    pub(crate) rank: usize,
 }
 
-impl MulteNode<QueryLang> {}
+impl MulteNode<QueryLang> {
+    /// Rank-aware dominance: at least as good a cost, reached by a derivation that is no deeper
+    fn covers(&self, other: &Self) -> bool {
+        self.cost <= other.cost && self.rank <= other.rank
+    }
+}
 
-// TODO: implement the e-class analysis that maintains a non-dominated frontier of multe-nodes per class
 #[derive(Debug, Clone)]
-struct FrontierAnalysis(Vec<MulteNode<QueryLang>>, Catalog);
+pub struct FrontierAnalysis(pub(crate) Vec<MulteNode<QueryLang>>, pub(crate) Catalog);
 
 impl FrontierAnalysis {
-    fn new(catalog: Catalog) -> Self {
+    pub fn new(catalog: Catalog) -> Self {
         FrontierAnalysis(vec![], catalog)
     }
 
     /// Inserts a new MulteNode into the frontier if it is not dominated by any existing node.
-    /// A node is dominated if there exists another node with a lower or equal cost.
+    /// A node is dominated if there exists another node with a lower or equal cost and a lower or equal rank.
     /// If the new node is inserted, any existing nodes that are dominated by it are removed.
     /// Returns true if the node was inserted, false otherwise.
+    ///
+    /// Taking rank into account means an entry is only ever replaced by one that is at least as good and
+    /// no deeper, so every threshold stays satisfied by an entry of lower rank than the node that set it.
+    /// A cheaper but deeper entry (e.g. one derived through a cycle back into this class) is kept alongside.
     fn insert(&mut self, multe_node: MulteNode<QueryLang>) -> bool {
         // Check if the new node is dominated by any existing node
         for existing in &self.0 {
-            if existing.cost <= multe_node.cost {
+            if existing.covers(&multe_node) {
                 return false; // New node is dominated, do not insert
             }
         }
 
         // Remove any existing nodes that are dominated by the new node
-        self.0
-            .retain(|existing| !(multe_node.cost <= existing.cost));
+        self.0.retain(|existing| !multe_node.covers(existing));
 
         // Insert the new node
         self.0.push(multe_node);
@@ -78,15 +93,22 @@ impl Analysis<QueryLang> for FrontierAnalysis {
         // appears in several positions can take a different cost from its frontier in each position.
         let children: Vec<Id> = enode.children().iter().map(|&c| egraph.find(c)).collect();
 
-        // 1. Collect the frontier of costs for each argument position
-        let arg_costs: Vec<Vec<CostProperties>> = children
+        // 1. Collect the frontier of (cost, rank) for each argument position
+        let arg_costs: Vec<Vec<(CostProperties, usize)>> = children
             .iter()
-            .map(|&c| egraph[c].data.0.iter().map(|m| m.cost.clone()).collect())
+            .map(|&c| {
+                egraph[c]
+                    .data
+                    .0
+                    .iter()
+                    .map(|m| (m.cost.clone(), m.rank))
+                    .collect()
+            })
             .collect();
 
         // 2. Build every combination of argument costs (cartesian product).
         // A leaf has no arguments, so it gets exactly one (empty) combination.
-        let mut combos: Vec<Vec<CostProperties>> = vec![vec![]];
+        let mut combos: Vec<Vec<(CostProperties, usize)>> = vec![vec![]];
         for costs in &arg_costs {
             combos = combos
                 .iter()
@@ -103,6 +125,8 @@ impl Analysis<QueryLang> for FrontierAnalysis {
         // 3. Compute the cost of this enode for each combination and insert it into the frontier
         let mut frontier = FrontierAnalysis::new(egraph.analysis.1.clone());
         for combo in combos {
+            let rank = combo.iter().map(|(_, r)| r + 1).max().unwrap_or(0);
+            let (combo, _): (Vec<CostProperties>, Vec<usize>) = combo.into_iter().unzip();
             let cost = frontier.1.op_cost(enode, &combo);
             let args: Vec<(Id, CostProperties)> = children.iter().copied().zip(combo).collect();
             frontier.insert(MulteNode {
@@ -110,6 +134,7 @@ impl Analysis<QueryLang> for FrontierAnalysis {
                 node: enode.clone(),
                 args,
                 cost,
+                rank,
             });
         }
         frontier
@@ -139,11 +164,16 @@ mod tests {
     }
 
     fn mn(cost: CostProperties) -> MulteNode<QueryLang> {
+        mnr(cost, 0)
+    }
+
+    fn mnr(cost: CostProperties, rank: usize) -> MulteNode<QueryLang> {
         MulteNode {
             id: Id::from(0usize),
             node: QueryLang::Name("n".into()),
             args: vec![],
             cost,
+            rank,
         }
     }
 
@@ -159,23 +189,28 @@ mod tests {
         f.0.iter().map(|m| m.cost.clone()).collect()
     }
 
-    /// No two frontier entries are comparable, and every inserted cost is covered by some entry
-    fn assert_valid_frontier(f: &FrontierAnalysis, inserted: &[CostProperties]) {
+    /// No frontier entry covers another, and every inserted entry is covered by some frontier entry
+    fn assert_valid_frontier(f: &FrontierAnalysis, inserted: &[MulteNode<QueryLang>]) {
+        let entries = || {
+            f.0.iter()
+                .map(|m| (m.cost.clone(), m.rank))
+                .collect::<Vec<_>>()
+        };
         for (i, a) in f.0.iter().enumerate() {
-            for b in &f.0[i + 1..] {
-                assert_eq!(
-                    a.cost.partial_cmp(&b.cost),
-                    None,
-                    "comparable entries in frontier: {:?}",
-                    costs(f)
+            for (j, b) in f.0.iter().enumerate() {
+                assert!(
+                    i == j || !a.covers(b),
+                    "entry covers another in frontier: {:?}",
+                    entries()
                 );
             }
         }
         for k in inserted {
             assert!(
-                f.0.iter().any(|m| m.cost <= *k),
-                "{k:?} not covered by frontier {:?}",
-                costs(f)
+                f.0.iter().any(|m| m.covers(k)),
+                "{:?} not covered by frontier {:?}",
+                (&k.cost, k.rank),
+                entries()
             );
         }
     }
@@ -208,6 +243,25 @@ mod tests {
     }
 
     #[test]
+    fn insert_is_rank_aware() {
+        // A cheaper but deeper entry does not replace a shallower one: both are kept
+        let mut f = frontier(&[]);
+        assert!(f.insert(mnr(c(false, None, 5), 1)));
+        assert!(f.insert(mnr(c(false, None, 1), 3)));
+        assert_eq!(f.0.len(), 2);
+        // A deeper entry that is no cheaper than a shallower one is rejected
+        assert!(!f.insert(mnr(c(false, None, 5), 2)));
+        // An entry that is at least as cheap and no deeper replaces both
+        assert!(f.insert(mnr(c(false, None, 1), 1)));
+        assert_eq!(
+            f.0.iter()
+                .map(|m| (m.cost.cost, m.rank))
+                .collect::<Vec<_>>(),
+            vec![(1, 1)]
+        );
+    }
+
+    #[test]
     fn insert_maintains_frontier_invariant() {
         // Deterministic pseudo-random insertion sequences over a small cost domain
         let mut seed: u64 = 0x2545F4914F6CDD1D;
@@ -223,7 +277,8 @@ mod tests {
             let mut inserted = vec![];
             for _ in 0..30 {
                 let k = c(next(2) == 1, indexes[next(3) as usize], next(6) as usize);
-                f.insert(mn(k.clone()));
+                let k = mnr(k, next(4) as usize);
+                f.insert(k.clone());
                 inserted.push(k);
                 assert_valid_frontier(&f, &inserted);
             }
@@ -237,7 +292,8 @@ mod tests {
         let mut f = frontier(&a);
         let changed = f.merge(frontier(&b));
         assert!(changed.0);
-        assert_valid_frontier(&f, &[a.clone(), b].concat());
+        let all: Vec<_> = a.iter().chain(&b).cloned().map(mn).collect();
+        assert_valid_frontier(&f, &all);
         assert_eq!(f.0.len(), 3); // (true, None, 5) is dominated by (true, None, 3)
 
         // Merging in nothing new reports no change
