@@ -1,6 +1,6 @@
 /* A simple DB Query language to test with */
 
-use egg::{CostFunction, Id, define_language};
+use egg::{CostFunction, Id, Language, define_language};
 use std::{
     collections::{HashMap, HashSet},
     hash::Hash,
@@ -37,7 +37,7 @@ define_language! {
 }
 
 /// Physical Properties that can be used to annotate e-classes in the e-graph. These properties can be used to guide the extraction process and to prune the search space.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Eq)]
 pub struct CostProperties {
     // Tables that contribute to this result
     pub tables: HashSet<String>,
@@ -59,20 +59,41 @@ pub struct CostProperties {
 // - More sorted results are preferred over less sorted results.
 // - Lower cost results are preferred over higher cost results.
 // The rows property is only used to compute further costs of upstream results.
+//
+// Less means preferred. One result is less than another if it is at least as good on every
+// property and strictly better on at least one; they are equal if they tie on every property.
+// Otherwise (each is better on some property, or they are sorted on different indexes) they are incomparable.
 impl PartialOrd for CostProperties {
     fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-        // Order by 3rd property whenever 2 are equal, otherwise incomparable.
-        match (
-            self.materialized == other.materialized,
-            self.index == other.index,
-            self.cost == other.cost,
-        ) {
-            (true, true, true) => return Some(std::cmp::Ordering::Equal),
-            (true, true, _) => return self.cost.partial_cmp(&other.cost),
-            (true, _, true) => return self.index.partial_cmp(&other.index),
-            (_, true, true) => return self.materialized.partial_cmp(&other.materialized),
-            _ => return None,
+        use std::cmp::Ordering::*;
+
+        let materialized = other.materialized.cmp(&self.materialized);
+        let index = match (&self.index, &other.index) {
+            (a, b) if a == b => Equal,
+            (Some(_), None) => Less,
+            (None, Some(_)) => Greater,
+            _ => return None, // Sorted on different indexes
+        };
+        let cost = self.cost.cmp(&other.cost);
+
+        let props = [materialized, index, cost];
+        if props.iter().all(|&o| o == Equal) {
+            Some(Equal)
+        } else if props.iter().all(|&o| o != Greater) {
+            Some(Less)
+        } else if props.iter().all(|&o| o != Less) {
+            Some(Greater)
+        } else {
+            None
         }
+    }
+}
+
+impl PartialEq for CostProperties {
+    fn eq(&self, other: &Self) -> bool {
+        self.index == other.index
+            && self.materialized == other.materialized
+            && self.cost == other.cost
     }
 }
 
@@ -109,20 +130,21 @@ impl CostProperties {
 
 // TODO: Test this partial ordering and make sure it is correct.
 
-struct Catalog {
+#[derive(Debug, Clone)]
+pub struct Catalog {
     tables: HashMap<String, usize>,     // Map from table name to row count
     indexes: HashSet<(String, String)>, // Map from index name to row count
 }
 
 impl Catalog {
-    fn new() -> Self {
+    pub fn new() -> Self {
         Self {
             tables: HashMap::new(),
             indexes: HashSet::new(),
         }
     }
 
-    fn with_table(&self, name: String, row_count: usize) -> Self {
+    pub fn with_table(&self, name: String, row_count: usize) -> Self {
         Catalog {
             tables: {
                 let mut tables = self.tables.clone();
@@ -133,7 +155,7 @@ impl Catalog {
         }
     }
 
-    fn with_index(&self, table_name: String, index_name: String) -> Self {
+    pub fn with_index(&self, table_name: String, index_name: String) -> Self {
         Catalog {
             tables: self.tables.clone(),
             indexes: {
@@ -167,6 +189,9 @@ impl Catalog {
 
 /// Cost function for QueryLang language
 ///
+/// `op_cost` computes the cost of an operator from the costs of its arguments, given in argument order.
+/// Since each argument position gets its own cost, the same e-class can take different costs in different positions.
+///
 /// The cost model is a simplified model of query execution cost.
 /// We compute the costs of each operator as follows:
 /// - Name: No cost, load rows and columns from the catalog
@@ -193,16 +218,11 @@ impl Catalog {
 ///     Rows of output are a worst case upper bound: input rows * SELECTIVITY.
 ///
 /// For all cost computations, we use a saturating operation to avoid overflow.
-impl CostFunction<QueryLang> for Catalog {
-    type Cost = CostProperties;
-
-    fn cost<C>(&mut self, enode: &QueryLang, mut costs: C) -> Self::Cost
-    where
-        C: FnMut(Id) -> Self::Cost,
-    {
-        match enode {
+impl Catalog {
+    pub fn op_cost(&self, enode: &QueryLang, args: &[CostProperties]) -> CostProperties {
+        match (enode, args) {
             // Names load row info from the catalog
-            QueryLang::Name(name) => {
+            (QueryLang::Name(name), []) => {
                 // Get catalog information for the table into the properties, but do not compute a cost yet
                 // If we don't find a table with that name in the catalog, assume its a column for now
                 if let Some(row_count) = self.get_rows(name) {
@@ -226,16 +246,16 @@ impl CostFunction<QueryLang> for Catalog {
                 }
             }
             // If we got a column name from the name child, use it, otherwise go to top
-            QueryLang::Column([c]) => {
-                if costs(*c).cols.len() > 0 {
-                    costs(*c)
+            (QueryLang::Column(_), [c]) => {
+                if c.cols.len() > 0 {
+                    c.clone()
                 } else {
                     CostProperties::top()
                 }
             }
             // Tables keep the info loaded from the table name, but do not compute a cost yet
-            QueryLang::Table([t]) => {
-                let table_cost = costs(*t);
+            (QueryLang::Table(_), [t]) => {
+                let table_cost = t.clone();
                 CostProperties {
                     tables: table_cost.tables.clone(),
                     cols: HashSet::new(),
@@ -246,9 +266,9 @@ impl CostFunction<QueryLang> for Catalog {
                 }
             }
             // Indexes keep the info loaded from the table name, but do not compute a cost yet and check if they are, in fact, materialized
-            QueryLang::Index([t, c]) => {
-                let table_cost = costs(*t);
-                let col_cost = costs(*c);
+            (QueryLang::Index(_), [t, c]) => {
+                let table_cost = t.clone();
+                let col_cost = c.clone();
                 // Ensure we got a table and a column set, otherwise go to top
                 if table_cost.tables.len() != 1 || col_cost.cols.len() != 1 {
                     CostProperties::top()
@@ -269,14 +289,14 @@ impl CostFunction<QueryLang> for Catalog {
             }
             // Sequential Scan is a physical operator that has a cost based on the number of rows in the input
             // We accumulate the cost of reading all the rows in our input, and maintain all other properties
-            QueryLang::SeqScan([t]) => {
-                let mut scan_cost = costs(*t).clone();
+            (QueryLang::SeqScan(_), [t]) => {
+                let mut scan_cost = t.clone();
                 scan_cost.cost += scan_cost.rows.saturating_mul(READ_COST); // Cost is proportional to the number of rows in the table
                 scan_cost
             }
             // IndexScan is a physical operator that has a cost based on the number of rows in the input, assuming the index is materialized
-            QueryLang::IndexScan([i]) => {
-                let child_cost = costs(*i);
+            (QueryLang::IndexScan(_), [i]) => {
+                let child_cost = i.clone();
                 let mut index_cost = child_cost.clone();
                 // Can't index scan if we don't have an index
                 if index_cost.index.is_none() {
@@ -295,10 +315,10 @@ impl CostFunction<QueryLang> for Catalog {
                     index_cost
                 }
             }
-            QueryLang::NestedLoopJoin([left, right, cols]) => {
-                let left_cost = costs(*left);
-                let right_cost = costs(*right);
-                let col_cost = costs(*cols);
+            (QueryLang::NestedLoopJoin(_), [left, right, cols]) => {
+                let left_cost = left.clone();
+                let right_cost = right.clone();
+                let col_cost = cols.clone();
                 // Take union of tables and columns from each side of the join
                 let tables: HashSet<String> = left_cost
                     .tables
@@ -323,10 +343,10 @@ impl CostFunction<QueryLang> for Catalog {
                 join_cost.cost += join_cost.rows.saturating_mul(READ_COST); // Cost is proportional to the number of rows in the result
                 join_cost
             }
-            QueryLang::MergeSortJoin([left, right, cols]) => {
-                let left_cost = costs(*left);
-                let right_cost = costs(*right);
-                let col_cost = costs(*cols);
+            (QueryLang::MergeSortJoin(_), [left, right, cols]) => {
+                let left_cost = left.clone();
+                let right_cost = right.clone();
+                let col_cost = cols.clone();
                 // If the left and right child are not both sorted by an index better than the columns in the join predicate, cost is top
                 let col_prefix = col_cost
                     .cols
@@ -373,9 +393,9 @@ impl CostFunction<QueryLang> for Catalog {
                     .saturating_mul(READ_COST);
                 join_cost
             }
-            QueryLang::ExhaustiveSelect([t, cols]) => {
-                let table_cost = costs(*t);
-                let col_cost = costs(*cols);
+            (QueryLang::ExhaustiveSelect(_), [t, cols]) => {
+                let table_cost = t.clone();
+                let col_cost = cols.clone();
                 // Take union of tables and columns from each side of the select
                 let mut cols: HashSet<String> = table_cost.cols.clone();
                 for col in col_cost.cols {
@@ -393,9 +413,9 @@ impl CostFunction<QueryLang> for Catalog {
                 select_cost.cost += table_cost.rows.saturating_mul(READ_COST);
                 select_cost
             }
-            QueryLang::SortSelect([t, cols]) => {
-                let table_cost = costs(*t);
-                let col_cost = costs(*cols);
+            (QueryLang::SortSelect(_), [t, cols]) => {
+                let table_cost = t.clone();
+                let col_cost = cols.clone();
                 let col_prefix = col_cost
                     .cols
                     .iter()
@@ -439,3 +459,17 @@ impl CostFunction<QueryLang> for Catalog {
 }
 
 // TODO: Test the cost function
+
+/// Adapter for egg's extraction infrastructure: looks up each child's cost with the cost function
+/// that egg provides, in argument order, and delegates to [`Catalog::op_cost`].
+impl CostFunction<QueryLang> for Catalog {
+    type Cost = CostProperties;
+
+    fn cost<C>(&mut self, enode: &QueryLang, mut costs: C) -> Self::Cost
+    where
+        C: FnMut(Id) -> Self::Cost,
+    {
+        let args: Vec<CostProperties> = enode.children().iter().map(|&c| costs(c)).collect();
+        self.op_cost(enode, &args)
+    }
+}
