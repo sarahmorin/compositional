@@ -25,6 +25,10 @@ fn main() {
             "three-way join",
             "(JOIN (JOIN (SCAN (T- emp)) (SCAN (T- dept)) (C- dept_id)) (SCAN (T- proj)) (C- proj_id))",
         ),
+        Demo::new(
+            "selection over three-way join",
+            "(SELECT (JOIN (JOIN (SCAN (T- emp)) (SCAN (T- dept)) (C- dept_id)) (SCAN (T- proj)) (C- proj_id)) (C- salary))",
+        ),
     ];
     for demo in demos {
         println!("{}", demo.run());
