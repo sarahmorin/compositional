@@ -1,8 +1,12 @@
 mod analysis;
 mod demo;
 mod extract;
+mod lattice;
+mod minlattice;
 mod querylang;
 mod rules;
+mod topdown;
+mod upset;
 
 use demo::Demo;
 
