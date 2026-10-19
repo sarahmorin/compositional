@@ -304,7 +304,7 @@ where
 
         let mut analysis = self.compute_analysis(&enode, &child_costs);
         let mut child_queue: Vec<(usize, &Id)> = enode.children().iter().enumerate().collect();
-        while analysis >= threshold {
+        while !(analysis < threshold) {
             if let Some((i, child)) = child_queue.pop() {
                 // If the child has no more options, we can't improve the analysis value for the node.
                 if self.is_completed(child) {
