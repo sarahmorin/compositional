@@ -146,7 +146,7 @@ where
     T: Hash + PartialOrd + PartialEq + Eq + Clone + WithTop + JoinLattice,
 {
     /// Join is the intersection of two UpSets
-    fn join(&self, other: &Self) -> Self {
+    fn join(&self, _other: &Self) -> Self {
         todo!("Implement join for BackwardUpSet");
     }
 }
