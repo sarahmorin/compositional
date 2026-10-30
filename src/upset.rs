@@ -146,7 +146,14 @@ where
     T: Hash + PartialOrd + PartialEq + Eq + Clone + WithTop + JoinLattice,
 {
     /// Join is the intersection of two UpSets
-    fn join(&self, _other: &Self) -> Self {
-        todo!("Implement join for BackwardUpSet");
+    fn join(&self, other: &Self) -> Self {
+        let mut new_elements = HashSet::new();
+        // The minimal elements of the intersection are among the cross-pairwise least upper bounds
+        for a in &self.elements {
+            for b in &other.elements {
+                new_elements.insert(a.join(b));
+            }
+        }
+        BackwardUpSet::new(new_elements)
     }
 }

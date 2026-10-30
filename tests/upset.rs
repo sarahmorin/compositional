@@ -1,7 +1,10 @@
-use compositional::lattice::{MeetLattice, WithTop};
+use compositional::lattice::{JoinLattice, MeetLattice, WithTop};
 use compositional::upset::BackwardUpSet;
 use std::cmp::Ordering;
 use std::collections::HashSet;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Hash)]
+struct N(i32);
 
 /// (int, int) under the product (componentwise) partial order.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -17,9 +20,27 @@ impl PartialOrd for P {
     }
 }
 
+impl WithTop for N {
+    fn top() -> Self {
+        N(i32::MAX)
+    }
+}
+
 impl WithTop for P {
     fn top() -> Self {
         P(i32::MAX, i32::MAX)
+    }
+}
+
+impl JoinLattice for N {
+    fn join(&self, o: &Self) -> Self {
+        N(self.0.max(o.0))
+    }
+}
+
+impl JoinLattice for P {
+    fn join(&self, o: &Self) -> Self {
+        P(self.0.max(o.0), self.1.max(o.1))
     }
 }
 
@@ -97,6 +118,67 @@ fn meet_lattice_laws() {
     let mut x = a.clone();
     x.meet_into(&b);
     assert_eq!(x, m);
+}
+
+#[test]
+fn total_order_join_keeps_single_largest() {
+    assert_eq!(up(vec![N(7)]).join(&up(vec![N(2)])).elements, set(vec![N(7)]));
+    assert_eq!(up(vec![N(2)]).join(&up(vec![N(7)])).elements, set(vec![N(7)]));
+}
+
+#[test]
+fn partial_order_join_keeps_minimal_frontier() {
+    // Joining two frontiers keeps all incomparable minima and drops dominated ones.
+    let j = up(vec![P(0, 5), P(5, 0)]).join(&up(vec![P(2, 2), P(6, 0)]));
+    assert_eq!(j.elements, set(vec![P(2, 5), P(5, 2), P(6, 0)]));
+}
+
+#[test]
+fn join_with_dominated_element_collapses_frontier() {
+    let frontier = up(vec![P(1, 4), P(4, 1), P(2, 2)]);
+    let worst = up(vec![P(5, 5)]);
+    assert_eq!(frontier.join(&worst).elements, set(vec![P(5, 5)]));
+    assert_eq!(worst.join(&frontier).elements, set(vec![P(5, 5)]));
+}
+
+#[test]
+fn join_with_dominating_element_is_noop() {
+    // (0,0) is <= every frontier element, so the frontier is unchanged.
+    let frontier = up(vec![P(1, 4), P(4, 1)]);
+    assert_eq!(frontier.join(&up(vec![P(0, 0)])), frontier);
+    // (0,9) is incomparable to both frontier elements, so it is joined with each: (1,9) and (4,9),
+    // of which only (1,9) is minimal.
+    assert_eq!(
+        frontier.join(&up(vec![P(0, 9)])).elements,
+        set(vec![P(1, 9)])
+    );
+}
+
+#[test]
+fn top_is_join_absorbing() {
+    let top = BackwardUpSet::<P>::top();
+    let u = up(vec![P(1, 4), P(4, 1)]);
+    assert_eq!(u.join(&top), top);
+    assert_eq!(top.join(&u), top);
+    assert_eq!(top.join(&top), top);
+}
+
+#[test]
+fn join_lattice_laws() {
+    let a = up(vec![P(1, 4), P(4, 1)]);
+    let b = up(vec![P(2, 2)]);
+    let c = up(vec![P(0, 6), P(6, 0)]);
+    assert_eq!(a.join(&a), a, "idempotent");
+    assert_eq!(a.join(&b), b.join(&a), "commutative");
+    assert_eq!(a.join(&b).join(&c), a.join(&b.join(&c)), "associative");
+
+    // Join is an upper bound of both inputs.
+    let j = a.join(&b);
+    assert!(j >= a && j >= b);
+
+    let mut x = a.clone();
+    x.join_into(&b);
+    assert_eq!(x, j);
 }
 
 #[test]
