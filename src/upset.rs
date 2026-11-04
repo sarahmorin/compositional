@@ -148,7 +148,7 @@ where
     /// Join is the intersection of two UpSets
     fn join(&self, other: &Self) -> Self {
         let mut new_elements = HashSet::new();
-        // The minimal elements of the intersection are among the cross-pairwise least upper bounds
+        // The minimal elements of the intersection are among the cross-pairwise joins (least upper bounds)
         for a in &self.elements {
             for b in &other.elements {
                 new_elements.insert(a.join(b));
