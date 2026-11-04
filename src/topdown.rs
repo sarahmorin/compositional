@@ -83,10 +83,11 @@ where
     L: Language,
     C: MeetLattice + WithTop,
 {
-    /// Query an e-class with a given threshold.
-    /// If we compute an analysis value that is less than or equal to the threshold, we return it.
-    /// Otherwise return None
-    fn query_class(&mut self, eclass: &Id, threshold: C) -> Option<C>;
+    /// Query an e-class with a given threshold, reporting what we know either way:
+    /// - `Ok(value)`: class analysis value that beats the threshold
+    /// - `Err(value)`: class analysis value that does not beat the threshold, but is the best value found for the
+    ///   class so far, which is its full analysis value if the class is completed
+    fn query_class(&mut self, eclass: &Id, threshold: C) -> Result<C, C>;
 
     /// Query a node with a given threshold.
     /// Return an analysis value for the node.
@@ -102,15 +103,13 @@ where
 {
     /// Given a node and its children's analysis values, return the node's analysis value.
     fn compute_analysis(&mut self, enode: &L, child_analyses: &[C]) -> C;
-}
 
-pub trait InvertibleCostFunction<L, C>
-where
-    L: Language,
-    C: MeetLattice + WithTop,
-{
-    /// Given a cost bound and an operator, return a cost bound for each argument such that any combination of arguments that satisfies the argument cost bounds will satisfy the operator cost bound.
-    fn invert_cost(&self, cost_bound: C, operator: &L) -> Vec<C>;
+    /// Given a threshold for a node and its children's current analysis values,
+    /// return a threshold for each child.
+    /// Default: Current analysis values (naive)
+    fn child_thresholds(&mut self, _enode: &L, _threshold: &C, child_analyses: &[C]) -> Vec<C> {
+        child_analyses.to_vec()
+    }
 }
 
 pub struct BasicTopDownAnalysis<L, C>
@@ -218,14 +217,11 @@ where
     C: MeetLattice + WithTop + Eq + Hash,
     Self: ComputeAnalysis<L, C>,
 {
-    /// Query an e-class with a given threshold.
-    /// If we compute an analysis value that is less than or equal to the threshold, we return it.
-    /// Otherwise return None
-    fn query_class(&mut self, eclass: &Id, threshold: C) -> Option<C> {
+    fn query_class(&mut self, eclass: &Id, threshold: C) -> Result<C, C> {
         // Check for a cycle in the query graph.
         if self.has_outstanding_query(eclass, threshold.clone()) {
-            // If we have already queried this eclass with this threshold, return None to indicate a cycle.
-            return None;
+            // If we have already queried this eclass with this threshold, return Err with current analysis to indicate a cycle.
+            return Err(self.get_analysis(eclass).cloned().unwrap_or_else(C::top));
         }
 
         // Lookup the current analysis value and unprocessed nodes for the eclass, or initialize them if they don't exist.
@@ -238,12 +234,12 @@ where
 
         // If we have already computed an analysis value that is less than the threshold, return it.
         if analysis < threshold {
-            return Some(analysis.clone());
+            return Ok(analysis);
         }
 
-        if self.completed.get(&eclass).cloned().unwrap_or(false) {
-            // If we have already completed the analysis for this eclass, return None to indicate that no such value exists.
-            return None;
+        if self.is_completed(eclass) {
+            // If we have already completed the analysis for this eclass, return Err with current analysis to indicate that no such value exists
+            return Err(analysis);
         }
 
         // Add the current query to the set of outstanding queries.
@@ -271,15 +267,15 @@ where
                 // Remove the current query from the set of outstanding queries.
                 self.remove_outstanding_query(eclass, threshold);
                 // Return the current analysis value for the eclass, which is less than or equal to the threshold.
-                return Some(analysis.clone());
+                return Ok(analysis);
             }
         }
 
         // If we have processed all nodes and still haven't found an analysis value that is less than or equal to the threshold,
-        // we return None to indicate that no such value exists.
+        // we return Err with current analysis to indicate that no such value exists.
         self.remove_outstanding_query(eclass, threshold);
         self.set_completed(eclass, true);
-        None
+        Err(analysis)
     }
 
     /// Query a node with a given threshold.
@@ -289,43 +285,58 @@ where
     fn query_node(&mut self, enode: &L, threshold: C) -> C {
         // If the node has no children, we can just return the analysis value for the node.
         // Other than leaves, we don't call the usual make since it would be bottom up
-        if enode.children().is_empty() {
-            return self.compute_analysis(&enode, &[]);
+        let children = enode.children();
+        if children.is_empty() {
+            return self.compute_analysis(enode, &[]);
         }
 
         // If the node has children, we need to query each child and combine their analysis values.
         let mut child_costs = Vec::new();
         for child in enode.children() {
             child_costs.push(
-                self.query_class(child, C::top())
+                self.query_class(child, C::top()).ok()
                     .unwrap_or_else(|| C::top()),
             );
         }
 
-        let mut analysis = self.compute_analysis(&enode, &child_costs);
-        let mut child_queue: Vec<(usize, &Id)> = enode.children().iter().enumerate().collect();
+        let mut analysis = self.compute_analysis(enode, &child_costs);
+
+        let mut targeted_round = true;
         while !(analysis < threshold) {
-            if let Some((i, child)) = child_queue.pop() {
-                // If the child has no more options, we can't improve the analysis value for the node.
-                if self.is_completed(child) {
+            let targets = if targeted_round {
+                self.child_thresholds(enode, &threshold, &child_costs)
+            } else {
+                // During fallback round, the thresholds to beat are just the current costs
+                child_costs.clone()
+            };
+
+            let mut improved = false;
+            for (i, child) in children.iter().enumerate() {
+                if child_costs[i] < targets[i] {
                     continue;
                 }
-                // Otherwise, we query the child with a better threshold to try to improve the analysis value for the node.
-                let child_analysis = self.query_class(child, child_costs[i].clone());
-                // If we got a new analysis value for the child, we need to recompute the analysis value for the node.
-                if let Some(new_child_analysis) = child_analysis {
-                    child_costs[i] = new_child_analysis.clone();
-                    analysis = self.compute_analysis(&enode, &child_costs);
-                    // If the child is not completed, we need to push it back onto the queue to try again later
-                    if !self.is_completed(child) {
-                        child_queue.push((i, child));
+
+                let latest = self.query_class(child, targets[i].clone()).unwrap_or_else(|best| best);
+                if latest < child_costs[i] {
+                    improved = true;
+                    child_costs[i] = latest;
+                    analysis = self.compute_analysis(enode, &child_costs);
+                    if analysis < threshold {
+                        return analysis;
+                    }
+                    // Fallback round stops at its first improvement and goes back to targeting
+                    if !targeted_round {
+                        break;
                     }
                 }
-            } else {
-                // If we have exhausted all children and still haven't found an analysis value that is less than or equal to the threshold,
-                // we return the current analysis value for the node, which is greater than the threshold.
+            }
+
+            // Fallback round with no improvement means every child is exhausted
+            if !targeted_round && !improved {
                 break;
             }
+            // Keep targeting while progress is made
+            targeted_round = improved;
         }
 
         analysis
