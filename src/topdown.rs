@@ -217,6 +217,9 @@ where
     C: MeetLattice + WithTop + Eq + Hash,
     Self: ComputeAnalysis<L, C>,
 {
+    /// Query an e-class with a given threshold.
+    /// If we compute an analysis value that is less than or equal to the threshold, we return it as a value.
+    /// Otherwise we return it as an error
     fn query_class(&mut self, eclass: &Id, threshold: C) -> Result<C, C> {
         // Check for a cycle in the query graph.
         if self.has_outstanding_query(eclass, threshold.clone()) {
