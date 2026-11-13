@@ -4,3 +4,4 @@ pub mod upset;
 pub mod topdown;
 pub mod querylang;
 pub mod rules;
+pub mod topdown_query;

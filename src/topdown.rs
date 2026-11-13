@@ -113,31 +113,39 @@ where
     fn invert_cost(&self, cost_bound: C, operator: &L) -> Vec<C>;
 }
 
-pub struct BasicTopDownAnalysis<L, C>
+pub struct BasicTopDownAnalysis<L, C, A>
 where
     L: Language,
     C: MeetLattice + WithTop + Eq + Hash,
 {
     egraph: EGraph<L, ()>,
+    /// Computes a node's analysis value from its children's
+    compute: A,
     analysis: HashMap<Id, C>,
     completed: HashMap<Id, bool>,
     nodes: HashMap<Id, Vec<L>>,
     outstanding_queries: HashMap<Id, Vec<C>>,
 }
 
-impl<L, C> BasicTopDownAnalysis<L, C>
+impl<L, C, A> BasicTopDownAnalysis<L, C, A>
 where
     L: Language,
     C: MeetLattice + WithTop + Eq + Hash,
 {
-    pub fn new(egraph: EGraph<L, ()>) -> Self {
+    pub fn new(egraph: EGraph<L, ()>, compute: A) -> Self {
         Self {
             egraph,
+            compute,
             analysis: HashMap::new(),
             completed: HashMap::new(),
             nodes: HashMap::new(),
             outstanding_queries: HashMap::new(),
         }
+    }
+
+    /// The analysis computation, e.g. to inspect any statistics it keeps
+    pub fn compute(&self) -> &A {
+        &self.compute
     }
 
     fn egraph(&self) -> &EGraph<L, ()> {
@@ -212,11 +220,11 @@ where
     }
 }
 
-impl<L, C> TopDownAnalysis<L, C> for BasicTopDownAnalysis<L, C>
+impl<L, C, A> TopDownAnalysis<L, C> for BasicTopDownAnalysis<L, C, A>
 where
     L: Language,
     C: MeetLattice + WithTop + Eq + Hash,
-    Self: ComputeAnalysis<L, C>,
+    A: ComputeAnalysis<L, C>,
 {
     /// Query an e-class with a given threshold.
     /// If we compute an analysis value that is less than or equal to the threshold, we return it.
@@ -290,7 +298,7 @@ where
         // If the node has no children, we can just return the analysis value for the node.
         // Other than leaves, we don't call the usual make since it would be bottom up
         if enode.children().is_empty() {
-            return self.compute_analysis(&enode, &[]);
+            return self.compute.compute_analysis(&enode, &[]);
         }
 
         // If the node has children, we need to query each child and combine their analysis values.
@@ -302,7 +310,7 @@ where
             );
         }
 
-        let mut analysis = self.compute_analysis(&enode, &child_costs);
+        let mut analysis = self.compute.compute_analysis(&enode, &child_costs);
         let mut child_queue: Vec<(usize, &Id)> = enode.children().iter().enumerate().collect();
         while !(analysis < threshold) {
             if let Some((i, child)) = child_queue.pop() {
@@ -315,7 +323,7 @@ where
                 // If we got a new analysis value for the child, we need to recompute the analysis value for the node.
                 if let Some(new_child_analysis) = child_analysis {
                     child_costs[i] = new_child_analysis.clone();
-                    analysis = self.compute_analysis(&enode, &child_costs);
+                    analysis = self.compute.compute_analysis(&enode, &child_costs);
                     // If the child is not completed, we need to push it back onto the queue to try again later
                     if !self.is_completed(child) {
                         child_queue.push((i, child));

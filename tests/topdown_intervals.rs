@@ -62,7 +62,10 @@ impl JoinLattice for Interval {
 
 impl Lattice for Interval {}
 
-impl ComputeAnalysis<Arith, Interval> for BasicTopDownAnalysis<Arith, Interval> {
+/// Interval arithmetic for `Arith`
+struct IntervalArith;
+
+impl ComputeAnalysis<Arith, Interval> for IntervalArith {
     fn compute_analysis(&mut self, enode: &Arith, c: &[Interval]) -> Interval {
         match enode {
             Arith::Num(n) => Interval(*n, *n),
@@ -81,7 +84,7 @@ fn check(expr: &str, threshold: Interval, expect_some: bool) {
         .run(&rules());
     let root = runner.egraph.find(runner.roots[0]);
 
-    let mut analysis = BasicTopDownAnalysis::new(runner.egraph);
+    let mut analysis = BasicTopDownAnalysis::new(runner.egraph, IntervalArith);
     let result = analysis.query_class(&root, threshold);
     assert_eq!(
         result.is_some(),

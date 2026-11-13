@@ -6,6 +6,7 @@ mod minlattice;
 mod querylang;
 mod rules;
 mod topdown;
+mod topdown_query;
 mod upset;
 
 use demo::Demo;

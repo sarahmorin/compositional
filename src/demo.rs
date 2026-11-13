@@ -1,4 +1,4 @@
-/* Demos: saturate a query with the frontier analysis and compare extractors */
+/* Demos: saturate a query and compare egg's extractor, the bottom-up frontier analysis, and the top-down analysis */
 
 use std::cmp::Ordering;
 use std::fmt;
@@ -6,8 +6,11 @@ use std::time::{Duration, Instant};
 
 use crate::analysis::FrontierAnalysis;
 use crate::extract::FrontierExtractor;
+use crate::lattice::WithTop;
 use crate::querylang::*;
 use crate::rules::rules;
+use crate::topdown::{BasicTopDownAnalysis, TopDownAnalysis};
+use crate::topdown_query::{Frontier, FrontierCost};
 use egg::*;
 
 /// Timings keep the fastest of several repetitions, which also hides one-time warmup costs
@@ -79,7 +82,8 @@ impl Demo {
     }
 
     /// Saturates the query with and without the frontier analysis, then extracts from the analyzed
-    /// e-graph with both the frontier extractor and egg's extractor.
+    /// e-graph with both the frontier extractor and egg's extractor, and queries the plain e-graph
+    /// with the top-down analysis under three thresholds.
     pub fn run(&self) -> Report {
         // Saturate without any analysis, to show what the frontier analysis adds to saturation time
         let (saturate_plain, plain) = time(SATURATE_REPS, || self.runner(()).run(&rules()));
@@ -103,6 +107,31 @@ impl Demo {
         let egg_cost = self.catalog.clone().cost_rec(&egg_plan);
         let egg_covered = frontier_plans.iter().any(|(bound, _)| *bound <= egg_cost);
 
+        // Top-down runs on the plain e-graph, so its saturation time is the plain one
+        let plain_root = plain.egraph.find(plain.roots[0]);
+        let topdown = vec![
+            self.run_topdown(&plain.egraph, plain_root, "top", "top", Frontier::top()),
+            self.run_topdown(
+                &plain.egraph,
+                plain_root,
+                "egg",
+                &format!("cost < {}", sep(egg_cost.cost.saturating_add(1))),
+                Frontier::threshold(false, None, egg_cost.cost.saturating_add(1)),
+            ),
+            self.run_topdown(
+                &plain.egraph,
+                plain_root,
+                "full",
+                "unsatisfiable",
+                Frontier::threshold(true, Some("<no index>"), 0),
+            ),
+        ];
+        // An unsatisfiable threshold computes the root's whole frontier, which should match the bottom-up one
+        let topdown_matches = topdown[2].root.as_ref()
+            == Some(&Frontier::from_costs(
+                frontier_plans.iter().map(|(cost, _)| cost.clone()),
+            ));
+
         Report {
             name: self.name.clone(),
             query: self.query.clone(),
@@ -117,8 +146,62 @@ impl Demo {
             egg_time,
             egg_plan: (egg_cost, egg_plan),
             egg_covered,
+            topdown,
+            topdown_matches,
         }
     }
+
+    /// Queries the root of `egraph` top-down with `threshold`, keeping the fastest of several repetitions
+    fn run_topdown(
+        &self,
+        egraph: &EGraph<QueryLang, ()>,
+        root: Id,
+        label: &'static str,
+        threshold_label: &str,
+        threshold: Frontier,
+    ) -> TopDownRun {
+        let mut best = Duration::MAX;
+        let mut last = None;
+        for _ in 0..EXTRACT_REPS {
+            // The analysis takes ownership of the e-graph; clone it outside of the timed region
+            let egraph = egraph.clone();
+            let start = Instant::now();
+            let mut analysis =
+                BasicTopDownAnalysis::new(egraph, FrontierCost::new(self.catalog.clone()));
+            let result = analysis.query_class(&root, threshold.clone());
+            best = best.min(start.elapsed());
+            last = Some((analysis, result));
+        }
+        let (analysis, result) = last.unwrap();
+        TopDownRun {
+            label,
+            threshold: threshold_label.into(),
+            time: best,
+            calls: analysis.compute().calls,
+            classes: egraph
+                .classes()
+                .filter(|c| analysis.get_analysis(&c.id).is_some())
+                .count(),
+            result,
+            root: analysis.get_analysis(&root).cloned(),
+        }
+    }
+}
+
+/// One top-down query of the root class
+pub struct TopDownRun {
+    pub label: &'static str,
+    /// Description of the threshold
+    pub threshold: String,
+    pub time: Duration,
+    /// Number of `compute_analysis` calls
+    pub calls: usize,
+    /// Number of e-classes that got an analysis value
+    pub classes: usize,
+    /// What the query returned
+    pub result: Option<Frontier>,
+    /// The root's analysis value after the query (its full frontier if the threshold was unsatisfiable)
+    pub root: Option<Frontier>,
 }
 
 /// Runs `f` `reps` times, returning the fastest time and the last result
@@ -155,7 +238,8 @@ impl GraphStats {
 /// Statistics and extracted plans from running a [`Demo`]. Print it with `{}`.
 ///
 /// The egg pipeline saturates without an analysis and then runs egg's extractor; the frontier pipeline
-/// saturates with the frontier analysis and then runs the frontier extractor.
+/// saturates with the frontier analysis and then runs the frontier extractor; the top-down pipeline
+/// saturates without an analysis and then queries the root with a threshold (costs only, no plans).
 pub struct Report {
     pub name: String,
     pub query: RecExpr<QueryLang>,
@@ -177,6 +261,10 @@ pub struct Report {
     pub egg_plan: (CostProperties, RecExpr<QueryLang>),
     /// Whether some frontier plan is at least as good as egg's plan
     pub egg_covered: bool,
+    /// Top-down queries with a top, egg-cost, and unsatisfiable threshold
+    pub topdown: Vec<TopDownRun>,
+    /// Whether the unsatisfiable top-down query computed the same root frontier as the bottom-up analysis
+    pub topdown_matches: bool,
 }
 
 impl fmt::Display for Report {
@@ -189,13 +277,13 @@ impl fmt::Display for Report {
         // E-graph sizes
         writeln!(
             f,
-            "{:<10} {:>8} {:>8} {:>6}  {}",
+            "{:<16} {:>8} {:>8} {:>6}  {}",
             "e-graph", "nodes", "classes", "iters", "stopped"
         )?;
         for (label, g) in [("egg", &self.plain), ("frontier", &self.frontier)] {
             writeln!(
                 f,
-                "{:<10} {:>8} {:>8} {:>6}  {:?}",
+                "{:<16} {:>8} {:>8} {:>6}  {:?}",
                 label,
                 sep(g.nodes),
                 sep(g.classes),
@@ -214,49 +302,77 @@ impl fmt::Display for Report {
 
         // Timings
         let egg_total = self.saturate_plain + self.egg_time;
-        let frontier_total = self.saturate_frontier + self.frontier_time;
         writeln!(
             f,
-            "{:<10} {:>11} {:>11} {:>11}",
-            "time", "saturate", "extract", "total"
+            "{:<16} {:>11} {:>11} {:>11} {:>8}",
+            "time", "saturate", "extract", "total", "vs egg"
         )?;
-        for (label, saturate, extract, total) in [
-            ("egg", self.saturate_plain, self.egg_time, egg_total),
+        let mut rows = vec![
+            ("egg".to_string(), self.saturate_plain, self.egg_time),
             (
-                "frontier",
+                "frontier".to_string(),
                 self.saturate_frontier,
                 self.frontier_time,
-                frontier_total,
             ),
-        ] {
+        ];
+        for run in &self.topdown {
+            rows.push((
+                format!("top-down {}", run.label),
+                self.saturate_plain,
+                run.time,
+            ));
+        }
+        for (label, saturate, extract) in rows {
             writeln!(
                 f,
-                "{:<10} {:>11} {:>11} {:>11}",
+                "{:<16} {:>11} {:>11} {:>11} {:>8}",
                 label,
                 fmt_duration(saturate),
                 fmt_duration(extract),
-                fmt_duration(total)
+                fmt_duration(saturate + extract),
+                fmt_ratio(saturate + extract, egg_total)
+            )?;
+        }
+        writeln!(f)?;
+
+        // Top-down work: how much of the e-graph each query analyzed
+        writeln!(
+            f,
+            "{:<16} {:<20} {:>8} {:>17}  {}",
+            "top-down work", "threshold", "calls", "classes analyzed", "result"
+        )?;
+        for run in &self.topdown {
+            let result = match &run.result {
+                Some(r) => format!("satisfied, {} costs", r.costs().len()),
+                None => "not satisfied".into(),
+            };
+            writeln!(
+                f,
+                "{:<16} {:<20} {:>8} {:>17}  {}",
+                run.label,
+                run.threshold,
+                sep(run.calls),
+                format!("{} / {}", sep(run.classes), sep(self.plain.classes)),
+                result
             )?;
         }
         writeln!(
             f,
-            "{:<10} {:>11} {:>11} {:>11}",
-            "ratio",
-            fmt_ratio(self.saturate_frontier, self.saturate_plain),
-            fmt_ratio(self.frontier_time, self.egg_time),
-            fmt_ratio(frontier_total, egg_total)
+            "full top-down root frontier {} bottom-up frontier",
+            if self.topdown_matches {
+                "matches"
+            } else {
+                "DOES NOT MATCH"
+            }
         )?;
         writeln!(f)?;
 
         // Plans
         writeln!(
             f,
-            "{:<10} {:>13} {:>15} {:<10} {:<5} {}",
+            "{:<16} {:>13} {:>15} {:<10} {:<5} {}",
             "plan", "cost", "rows", "sorted on", "mat", "expression"
         )?;
-        for (cost, plan) in &self.frontier_plans {
-            writeln!(f, "{:<10} {} {}", "frontier", fmt_cost(cost), plan)?;
-        }
         let covered = if self.egg_covered {
             "covered by frontier"
         } else {
@@ -264,11 +380,31 @@ impl fmt::Display for Report {
         };
         writeln!(
             f,
-            "{:<10} {} {}  ({covered})",
+            "{:<16} {} {}  ({covered})",
             "egg",
             fmt_cost(&self.egg_plan.0),
             self.egg_plan.1
-        )
+        )?;
+        for (cost, plan) in &self.frontier_plans {
+            writeln!(f, "{:<16} {} {}", "frontier", fmt_cost(cost), plan)?;
+        }
+        // Top-down has no plans yet, only the costs it returned (for the full run: the root's whole frontier)
+        for run in &self.topdown {
+            let costs = if run.label == "full" {
+                &run.root
+            } else {
+                &run.result
+            };
+            for cost in costs.iter().flat_map(|c| c.costs()) {
+                writeln!(
+                    f,
+                    "{:<16} {} (costs only)",
+                    format!("top-down {}", run.label),
+                    fmt_cost(cost)
+                )?;
+            }
+        }
+        Ok(())
     }
 }
 
@@ -300,9 +436,9 @@ fn fmt_duration(d: Duration) -> String {
     }
 }
 
-/// How many times longer `frontier` took than `egg`
-fn fmt_ratio(frontier: Duration, egg: Duration) -> String {
-    format!("{:.2}x", frontier.as_secs_f64() / egg.as_secs_f64())
+/// How many times longer `other` took than `egg`
+fn fmt_ratio(other: Duration, egg: Duration) -> String {
+    format!("{:.2}x", other.as_secs_f64() / egg.as_secs_f64())
 }
 
 /// A number with thousands separators, e.g. `1,000,000`
