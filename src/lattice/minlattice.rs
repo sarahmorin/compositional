@@ -1,4 +1,4 @@
-use crate::lattice::{JoinLattice, MeetLattice, WithBot, WithTop};
+use crate::lattice::generic::{JoinLattice, MeetLattice, WithBot, WithTop};
 
 /// Min lattice implementation
 #[derive(Debug, Clone)]

@@ -6,7 +6,7 @@ use std::time::{Duration, Instant};
 
 use crate::analysis::FrontierAnalysis;
 use crate::extract::FrontierExtractor;
-use crate::lattice::WithTop;
+use crate::lattice::generic::WithTop;
 use crate::querylang::*;
 use crate::rules::rules;
 use crate::topdown::{BasicTopDownAnalysis, TopDownAnalysis};

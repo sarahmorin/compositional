@@ -1,5 +1,5 @@
-use compositional::lattice::{MeetLattice, WithTop};
-use compositional::upset::BackwardUpSet;
+use compositional::lattice::generic::{MeetLattice, WithTop};
+use compositional::lattice::upset::BackwardUpSet;
 use std::cmp::Ordering;
 use std::collections::HashSet;
 

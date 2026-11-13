@@ -1,6 +1,6 @@
 //! Sanity check for `BasicTopDownAnalysis` using interval analysis over a tiny arithmetic language.
 
-use compositional::lattice::{JoinLattice, Lattice, MeetLattice, WithTop};
+use compositional::lattice::generic::{JoinLattice, Lattice, MeetLattice, WithTop};
 use compositional::topdown::{BasicTopDownAnalysis, ComputeAnalysis, TopDownAnalysis};
 use egg::*;
 use std::cmp::Ordering;

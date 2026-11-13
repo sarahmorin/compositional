@@ -1,4 +1,4 @@
-use crate::lattice::{MeetLattice, WithTop};
+use crate::lattice::generic::{MeetLattice, WithTop};
 /// Top down analysis for egg
 
 /// Current analysis is bottom up:

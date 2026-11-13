@@ -1,4 +1,4 @@
-use crate::lattice::{JoinLattice, MeetLattice, WithTop};
+use crate::lattice::generic::{JoinLattice, MeetLattice, WithTop};
 use std::collections::HashSet;
 use std::hash::Hash;
 

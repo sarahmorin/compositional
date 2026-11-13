@@ -1,9 +1,9 @@
 /* Top-down frontier analysis for the query language, using `Catalog::op_cost` as the cost function */
 
-use crate::lattice::{MeetLattice, WithTop};
+use crate::lattice::generic::{MeetLattice, WithTop};
+use crate::lattice::upset::BackwardUpSet;
 use crate::querylang::{Catalog, CostProperties, QueryLang};
 use crate::topdown::ComputeAnalysis;
-use crate::upset::BackwardUpSet;
 use std::cmp::Ordering;
 use std::collections::HashSet;
 use std::hash::{DefaultHasher, Hash, Hasher};
@@ -55,7 +55,9 @@ impl Frontier {
     /// The costs in the frontier, cheapest first
     pub fn costs(&self) -> Vec<&CostProperties> {
         let mut costs: Vec<_> = self.0.elements.iter().map(|c| &c.0).collect();
-        costs.sort_by(|a, b| (a.cost, &a.index, a.materialized).cmp(&(b.cost, &b.index, b.materialized)));
+        costs.sort_by(|a, b| {
+            (a.cost, &a.index, a.materialized).cmp(&(b.cost, &b.index, b.materialized))
+        });
         costs
     }
 }

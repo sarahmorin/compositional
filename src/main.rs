@@ -2,12 +2,10 @@ mod analysis;
 mod demo;
 mod extract;
 mod lattice;
-mod minlattice;
 mod querylang;
 mod rules;
 mod topdown;
 mod topdown_query;
-mod upset;
 
 use demo::Demo;
 
