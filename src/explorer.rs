@@ -1,3 +1,4 @@
+use crate::metrics::Metrics;
 /// Explorer module for optimization using an e-graph with generic search strategies.
 use egg::{Analysis, CostFunction, EGraph, Id, Language, RecExpr, Rewrite};
 
@@ -8,10 +9,14 @@ pub struct Explorer<L: Language, N: Analysis<L>, T> {
     rules: Vec<Rewrite<L, N>>,
     // task queue
     task_queue: Vec<T>,
+    // root e-class id for extraction
+    root: Option<Id>,
     // limits for early stopping
     time_limit: Option<std::time::Duration>,
     // task limit for early stopping
     task_limit: Option<usize>,
+    // metrics
+    metrics: Metrics,
 }
 
 impl<L, N, T> Explorer<L, N, T>
@@ -25,14 +30,24 @@ where
             egraph: EGraph::new(analysis),
             rules: Vec::new(),
             task_queue: Vec::new(),
+            root: None,
             time_limit: None,
             task_limit: None,
+            metrics: Metrics::new(),
         }
     }
 
     /// Add an expression to the e-graph.
+    /// The most recently added expression will be used as the root for extraction unless overridden by `with_expr`.
     pub fn with_expr(mut self, expr: &RecExpr<L>) -> Self {
-        self.egraph.add_expr(expr);
+        let root_id = self.egraph.add_expr(expr);
+        self.root = Some(root_id);
+        self
+    }
+
+    /// Manually set the root e-class id for extraction.
+    pub fn with_root(mut self, root: Id) -> Self {
+        self.root = Some(root);
         self
     }
 
@@ -65,8 +80,35 @@ where
         self.task_queue.pop()
     }
 
-    // TODO: Common e-graph interaction methods
+    /// Get root e-class id for extraction.
+    pub fn get_root(&self) -> Option<Id> {
+        self.root
+    }
 
+    /// Get a node from the e-graph.
+    pub fn get_node(&self, id: Id) -> &L {
+        self.egraph.get_node(id)
+    }
+
+    /// Get the metrics for the explorer.
+    pub fn get_metrics(&self) -> &Metrics {
+        &self.metrics
+    }
+
+    /// Set the metrics for the explorer.
+    fn set_metrics(&mut self, elapsed: std::time::Duration, tasks_processed: usize) {
+        self.metrics.time_elapsed = elapsed;
+        self.metrics.tasks_processed = tasks_processed;
+        self.metrics.total_nodes = self.egraph.total_number_of_nodes();
+        self.metrics.total_classes = self.egraph.number_of_classes();
+    }
+
+    /// Reset the metrics for the explorer.
+    fn reset_metrics(&mut self) {
+        self.metrics = Metrics::new();
+    }
+
+    // TODO: More e-graph interactions
     // TODO: Metrics handling
 }
 
@@ -99,6 +141,7 @@ where
     T: Clone,
 {
     fn run(&mut self) -> StopReason {
+        self.reset_metrics();
         let start_time = std::time::Instant::now();
         let mut task_count = 0;
 
@@ -106,6 +149,7 @@ where
             // If we've hit the time limit, stop processing tasks.
             if let Some(time_limit) = self.time_limit {
                 if start_time.elapsed() >= time_limit {
+                    self.set_metrics(start_time.elapsed(), task_count);
                     return StopReason::TimeLimitExceeded;
                 }
             }
@@ -113,6 +157,7 @@ where
             // If we've hit the task limit, stop processing tasks.
             if let Some(task_limit) = self.task_limit {
                 if task_count >= task_limit {
+                    self.set_metrics(start_time.elapsed(), task_count);
                     return StopReason::TaskLimitExceeded;
                 }
             }
@@ -122,6 +167,7 @@ where
             task_count += 1;
         }
 
+        self.set_metrics(start_time.elapsed(), task_count);
         StopReason::NoMoreTasks
     }
 }
