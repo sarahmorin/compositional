@@ -1,15 +1,15 @@
 /// Simple trait for a language of operators that can be used in an e-graph.
+use std::collections::HashSet;
 use std::fmt::Debug;
 use std::hash::Hash;
-use std::{collections::HashSet, ops::Sub};
 
-use crate::egraph::core::{ClassId, Node};
 pub trait Language: Clone + Debug + Hash + Eq {
     fn matches(&self, other: &Self) -> bool;
     fn arity(&self) -> usize;
 }
 
 /// A term in the language is a fully grounded expression
+#[derive(Clone, Debug)]
 pub struct Term<L>
 where
     L: Language,
@@ -18,7 +18,17 @@ where
     pub children: Vec<Term<L>>,
 }
 
+impl<L> Term<L>
+where
+    L: Language,
+{
+    pub fn new(op: L, children: Vec<Term<L>>) -> Self {
+        Self { op, children }
+    }
+}
+
 /// Op or var distinguishes between an operator and a variable in a pattern.
+#[derive(Clone, Debug)]
 pub enum OpOrVar<L>
 where
     L: Language,
@@ -44,6 +54,7 @@ where
 }
 
 /// A pattern is a tree of operators and variables that can be matched against terms in the language.
+#[derive(Clone, Debug)]
 pub struct Pattern<L>
 where
     L: Language,
@@ -72,12 +83,12 @@ where
         }
     }
 
-    /// Create a new pattern that is just a variable.
-    pub fn new_empty() -> Self {
+    /// Create a pattern that is just the variable `name`.
+    pub fn var(name: &str) -> Self {
         Self {
-            root: OpOrVar::Var(String::new()),
+            root: OpOrVar::Var(name.to_string()),
             children: Vec::new(),
-            vars: HashSet::new(),
+            vars: HashSet::from([name.to_string()]),
         }
     }
 }

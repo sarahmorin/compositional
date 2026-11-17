@@ -3,7 +3,7 @@ use crate::egraph::core::*;
 use crate::egraph::language::Language;
 
 pub trait Analysis<L: Language>: Sized {
-    type Data;
+    type Data: Clone;
 
     fn make(egraph: &mut EGraph<L, Self>, enode: &Node<L>, class: ClassId) -> Self::Data;
 
