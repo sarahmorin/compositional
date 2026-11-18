@@ -113,6 +113,8 @@ where
         }
     }
 
+    // TODO: Incremental matching with continuations
+
     /// Matches the search side of `rewrite` with its root at `node`, instantiates the apply
     /// side for every match, and unions the result into `node`'s class.
     ///

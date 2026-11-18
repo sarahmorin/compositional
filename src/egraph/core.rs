@@ -114,6 +114,16 @@ where
         }
     }
 
+    // ------------------------------------------------------------- metrics
+
+    pub fn num_classes(&self) -> usize {
+        self.classes.len()
+    }
+
+    pub fn num_nodes(&self) -> usize {
+        self.nodes.len()
+    }
+
     // ---------------------------------------------------------------- ids
 
     /// Canonical id of a class.
