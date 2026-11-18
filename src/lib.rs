@@ -1,4 +1,4 @@
-pub mod analysis;
+pub mod ast;
 pub mod bottom_up;
 pub mod egraph;
 pub mod explorer;

@@ -6,5 +6,5 @@ edition = "2024"
 [dependencies]
 bimap = "0.6.3"
 # egg = "0.11.0"
-egg = { path = "../egg" }
+# egg = { path = "../egg" }
 log = "0.4.35"
