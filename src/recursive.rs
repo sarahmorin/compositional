@@ -5,8 +5,10 @@ use crate::ast::MinAST;
 use crate::egraph::{
     core::{ClassId, NodeId},
     language::{Language, Term},
+    rewrite::Rewrite,
 };
-use crate::explorer::{Explorer, SearchStrategy};
+use crate::experiment::{Limits, Outcome, Strategy};
+use crate::explorer::{Explorer, Runner, SearchStrategy};
 use std::collections::{HashMap, HashSet};
 
 /// Tasks run in LIFO order, so a task runs only after every task pushed after it.
@@ -38,6 +40,32 @@ pub struct State {
 
 /// Recursive explorer search strategy
 pub type RecursiveExplorer<L> = Explorer<L, MinAST, Task, State>;
+
+/// The recursive explorer as an experiment strategy.
+pub struct Recursive;
+
+impl<L> Strategy<L> for Recursive
+where
+    L: Language,
+{
+    fn name(&self) -> &str {
+        "recursive"
+    }
+
+    fn run(&self, expr: &Term<L>, rules: &[Rewrite<L>], limits: &Limits) -> Outcome<L> {
+        let explorer = RecursiveExplorer::new(MinAST)
+            .with_expr(expr)
+            .with_rules(rules.to_vec());
+        let mut explorer = limits.apply(explorer);
+        let stop = explorer.run();
+        let (_, term) = explorer.extract();
+        Outcome {
+            stop,
+            metrics: explorer.get_metrics().clone(),
+            term,
+        }
+    }
+}
 
 impl<L> RecursiveExplorer<L>
 where

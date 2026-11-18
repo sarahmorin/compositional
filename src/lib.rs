@@ -1,6 +1,7 @@
 pub mod ast;
 pub mod bottom_up;
 pub mod egraph;
+pub mod experiment;
 pub mod explorer;
 pub mod lattice;
 pub mod metrics;
