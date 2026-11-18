@@ -1,11 +1,22 @@
 use crate::egraph::{
     analysis::Analysis,
     core::{EGraph, Node, NodeId},
+    extract::CostFunction,
     language::Language,
 };
 
 /// MinAST analysis keeps the minimum cost for each e-class and the corresponding NodeId
 pub(crate) struct MinAST;
+impl<L> CostFunction<L, usize> for MinAST
+where
+    L: Language,
+{
+    fn cost(&self, _op: &L, children: &[usize]) -> usize {
+        // The cost of a node is 1 plus the sum of the costs of its children.
+        1 + children.iter().sum::<usize>()
+    }
+}
+
 impl<L> Analysis<L> for MinAST
 where
     L: Language,
