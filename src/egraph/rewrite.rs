@@ -135,6 +135,32 @@ where
         }
     }
 
+    /// Like `match_node`, but every class below `node` is seen through the single node that
+    /// `view` picks for it, so there is at most one match.
+    pub fn match_node_with_view(
+        &self,
+        pattern: &Pattern<L>,
+        node: NodeId,
+        view: &impl Fn(&Self, ClassId) -> NodeId,
+    ) -> Option<Subst> {
+        self.match_view_rec(pattern, node, &Subst::new(), view)
+    }
+
+    fn match_view_rec(
+        &self,
+        pattern: &Pattern<L>,
+        node: NodeId,
+        subst: &Subst,
+        view: &impl Fn(&Self, ClassId) -> NodeId,
+    ) -> Option<Subst> {
+        let (subst, residuals) = self.incremental_match(pattern, node, subst);
+        let mut subst = subst?;
+        for (class, child) in residuals {
+            subst = self.match_view_rec(child, view(self, class), &subst, view)?;
+        }
+        Some(subst)
+    }
+
     /// Adds the term described by `pattern` under `subst` and returns its class.
     pub fn instantiate(&mut self, pattern: &Pattern<L>, subst: &Subst) -> ClassId {
         match &pattern.root {
@@ -151,7 +177,25 @@ where
         }
     }
 
-    // TODO: Incremental matching with continuations
+    /// Like `instantiate`, but also returns the root node when the pattern's root is an operator.
+    pub fn instantiate_root(
+        &mut self,
+        pattern: &Pattern<L>,
+        subst: &Subst,
+    ) -> (ClassId, Option<NodeId>) {
+        match &pattern.root {
+            OpOrVar::Var(var) => (self.find(subst[var]), None),
+            OpOrVar::Op(op) => {
+                let children = pattern
+                    .children
+                    .iter()
+                    .map(|child| self.instantiate(child, subst))
+                    .collect();
+                let node_class = self.add_node(Node::new(op.clone(), children));
+                (node_class.class(), Some(node_class.node()))
+            }
+        }
+    }
 
     /// Matches the search side of `rewrite` with its root at `node`, instantiates the apply
     /// side for every match, and unions the result into `node`'s class.
