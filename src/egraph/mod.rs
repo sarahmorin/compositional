@@ -3,5 +3,7 @@ pub mod analysis;
 /// Simple e-graph implementation with support for generic search strategies and analyses.
 pub mod core;
 pub mod language;
+pub mod macros;
+pub mod parse;
 pub mod rewrite;
 pub mod unionfind;
