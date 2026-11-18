@@ -1,4 +1,5 @@
 /// Experiment harness for comparing search strategies on a common set of expressions.
+pub mod cli;
 pub mod results;
 
 use crate::egraph::{
@@ -10,10 +11,12 @@ use crate::egraph::{
 use crate::explorer::{Explorer, StopReason};
 use crate::metrics::Metrics;
 use log::info;
+use std::any::Any;
 use std::marker::PhantomData;
+use std::panic::{self, AssertUnwindSafe};
 use std::time::{Duration, Instant};
 
-pub use results::{Record, Results};
+pub use results::{Record, Results, Run};
 
 /// A search strategy the harness can run.
 ///
@@ -114,20 +117,36 @@ where
             for strategy in &self.strategies {
                 info!("running {} on {expr_name}", strategy.name());
                 let start = Instant::now();
-                let outcome = strategy.run(expr, &self.rules, &self.limits);
-                let total_time = start.elapsed();
+                // A panicking strategy is recorded as failed instead of ending the experiment.
+                let result = panic::catch_unwind(AssertUnwindSafe(|| {
+                    let outcome = strategy.run(expr, &self.rules, &self.limits);
+                    Run {
+                        stop: outcome.stop,
+                        metrics: outcome.metrics,
+                        cost: self.cost_fn.term_cost(&outcome.term),
+                        term: outcome.term,
+                    }
+                }))
+                .map_err(|payload| panic_message(payload.as_ref()));
                 records.push(Record {
                     expr: expr_name.clone(),
                     strategy: strategy.name().to_string(),
-                    stop: outcome.stop,
-                    metrics: outcome.metrics,
-                    total_time,
                     initial_cost: initial_cost.clone(),
-                    cost: self.cost_fn.term_cost(&outcome.term),
-                    term: outcome.term,
+                    total_time: start.elapsed(),
+                    result,
                 });
             }
         }
         Results { records }
+    }
+}
+
+fn panic_message(payload: &(dyn Any + Send)) -> String {
+    if let Some(msg) = payload.downcast_ref::<&str>() {
+        msg.to_string()
+    } else if let Some(msg) = payload.downcast_ref::<String>() {
+        msg.clone()
+    } else {
+        "unknown panic".to_string()
     }
 }

@@ -48,6 +48,19 @@ impl Strategy<Lang> for Identity {
     }
 }
 
+/// Strategy that always panics.
+struct Broken;
+
+impl Strategy<Lang> for Broken {
+    fn name(&self) -> &str {
+        "broken"
+    }
+
+    fn run(&self, _: &Term<Lang>, _: &[Rewrite<Lang>], _: &Limits) -> Outcome<Lang> {
+        todo!("not implemented")
+    }
+}
+
 fn experiment() -> Experiment<Lang, MinAST, usize> {
     Experiment::new(rules(), MinAST)
         .with_expr("nested", term("f(g(k(a)))"))
@@ -64,7 +77,8 @@ fn runs_every_strategy_on_every_expression() {
         .iter()
         .map(|r| {
             let names = (r.expr.as_str(), r.strategy.as_str());
-            (names, r.initial_cost, r.cost, r.term.to_string())
+            let run = r.result.as_ref().unwrap();
+            (names, r.initial_cost, run.cost, run.term.to_string())
         })
         .collect();
     assert_eq!(
@@ -76,7 +90,7 @@ fn runs_every_strategy_on_every_expression() {
             (("sum", "identity"), 6, 6, "+(f(g(k(a))), b)".to_string()),
         ]
     );
-    let recursive = &results.records[0];
+    let recursive = results.records[0].result.as_ref().unwrap();
     assert_eq!(recursive.stop, StopReason::NoMoreTasks);
     assert!(recursive.metrics.total_nodes > 0);
 }
@@ -84,9 +98,10 @@ fn runs_every_strategy_on_every_expression() {
 #[test]
 fn limits_reach_the_explorer() {
     let results = experiment().with_task_limit(1).run();
-    let recursive = &results.records[0];
+    let record = &results.records[0];
+    let recursive = record.result.as_ref().unwrap();
     assert_eq!(recursive.stop, StopReason::TaskLimitExceeded);
-    assert_eq!(recursive.cost, recursive.initial_cost);
+    assert_eq!(recursive.cost, record.initial_cost);
 }
 
 #[test]
@@ -107,4 +122,16 @@ fn results_print_and_write_csv() {
     assert!(lines[0].starts_with("expr,strategy,stop,"));
     // Terms containing commas are quoted.
     assert!(lines[3].ends_with(",\"+(f(m(a)), b)\""));
+}
+
+#[test]
+fn panicking_strategy_is_recorded_and_others_still_run() {
+    let results = experiment().with_strategy(Broken).run();
+    assert_eq!(results.records.len(), 6);
+    let broken = &results.records[2];
+    assert_eq!(broken.strategy, "broken");
+    let msg = broken.result.as_ref().err().unwrap();
+    assert!(msg.contains("not implemented"), "{msg}");
+    assert!(results.records[3].result.is_ok());
+    assert!(results.to_string().contains("Panicked"));
 }

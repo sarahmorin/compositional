@@ -11,12 +11,18 @@ use std::{fs, io};
 pub struct Record<L: Language, D> {
     pub expr: String,
     pub strategy: String,
+    pub initial_cost: D,
+    /// Wall-clock time of exploration and extraction together.
+    pub total_time: Duration,
+    /// The completed run, or the panic message if the strategy panicked.
+    pub result: Result<Run<L, D>, String>,
+}
+
+/// A run that completed, with its extracted term scored by the experiment's cost function.
+pub struct Run<L: Language, D> {
     pub stop: StopReason,
     /// Metrics recorded by the explorer during exploration.
     pub metrics: Metrics,
-    /// Wall-clock time of exploration and extraction together.
-    pub total_time: Duration,
-    pub initial_cost: D,
     pub cost: D,
     pub term: Term<L>,
 }
@@ -61,19 +67,33 @@ where
     fn rows(&self) -> Vec<Vec<String>> {
         let header = COLUMNS.iter().map(|c| c.to_string()).collect();
         let records = self.records.iter().map(|r| {
-            vec![
-                r.expr.clone(),
-                r.strategy.clone(),
-                format!("{:?}", r.stop),
-                r.initial_cost.to_string(),
-                r.cost.to_string(),
-                millis(r.metrics.time_elapsed),
-                millis(r.total_time),
-                r.metrics.tasks_processed.to_string(),
-                r.metrics.total_nodes.to_string(),
-                r.metrics.total_classes.to_string(),
-                r.term.to_string(),
-            ]
+            let mut row = vec![r.expr.clone(), r.strategy.clone()];
+            match &r.result {
+                Ok(run) => row.extend([
+                    format!("{:?}", run.stop),
+                    r.initial_cost.to_string(),
+                    run.cost.to_string(),
+                    millis(run.metrics.time_elapsed),
+                    millis(r.total_time),
+                    run.metrics.tasks_processed.to_string(),
+                    run.metrics.total_nodes.to_string(),
+                    run.metrics.total_classes.to_string(),
+                    run.term.to_string(),
+                ]),
+                // A panicked run has no metrics or term; report its message in the term column.
+                Err(msg) => row.extend([
+                    "Panicked".to_string(),
+                    r.initial_cost.to_string(),
+                    "-".to_string(),
+                    "-".to_string(),
+                    millis(r.total_time),
+                    "-".to_string(),
+                    "-".to_string(),
+                    "-".to_string(),
+                    msg.clone(),
+                ]),
+            }
+            row
         });
         std::iter::once(header).chain(records).collect()
     }
