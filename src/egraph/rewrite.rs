@@ -97,6 +97,44 @@ where
         )
     }
 
+    pub fn incremental_match<'a>(
+        &self,
+        pattern: &'a Pattern<L>,
+        node: NodeId,
+        subst: &Subst,
+    ) -> (Option<Subst>, Vec<(ClassId, &'a Pattern<L>)>) {
+        match &pattern.root {
+            OpOrVar::Var(var) => match subst.get(var) {
+                Some(&bound) => {
+                    if self.find(bound) != self.node_class(node).class() {
+                        (None, vec![])
+                    } else {
+                        (Some(subst.clone()), vec![])
+                    }
+                }
+                None => {
+                    let mut subst = subst.clone();
+                    subst.insert(var.clone(), self.node_class(node).class());
+                    (Some(subst), vec![])
+                }
+            },
+            OpOrVar::Op(op) => {
+                let node = self.get_node(node);
+                if !op.matches(&node.root) || node.children.len() != pattern.children.len() {
+                    return (None, vec![]);
+                }
+                let res_matches = pattern
+                    .children
+                    .iter()
+                    .zip(&node.children)
+                    .map(|(child, &class)| (class, child))
+                    .collect();
+
+                (Some(subst.clone()), res_matches)
+            }
+        }
+    }
+
     /// Adds the term described by `pattern` under `subst` and returns its class.
     pub fn instantiate(&mut self, pattern: &Pattern<L>, subst: &Subst) -> ClassId {
         match &pattern.root {
