@@ -193,7 +193,7 @@ where
         self.nodes.insert(id, node.clone());
         self.hashcons.insert(node.clone(), class);
         // The new class does not exist yet, so `make` may only look at the node's children.
-        let data = N::make(self, &node, class);
+        let data = N::make(self, &node, id);
         // Check that the class id matches the classes len
         self.classes
             .insert(class, EClass::new(class, vec![id], data));
@@ -323,9 +323,10 @@ where
     fn repair_analysis(&mut self, class: ClassId) {
         let parents: Vec<_> = self.class(class).parents.iter().copied().collect();
         for node_class in parents {
-            let node = self.get_node(node_class.node()).clone();
+            let id = self.find_node(node_class.node());
+            let node = self.get_node(id).clone();
             let parent = self.find(node_class.class());
-            let data = N::make(self, &node, parent);
+            let data = N::make(self, &node, id);
             let parent_class = self.classes.get_mut(&parent).unwrap();
             if self.analysis.merge(&mut parent_class.data, data).0 {
                 self.analysis_worklist.push(parent);

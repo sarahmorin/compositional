@@ -12,11 +12,11 @@ pub struct Explorer<L: Language, N: Analysis<L>, T, S> {
     // e-graph
     pub egraph: EGraph<L, N>,
     // rule set
-    rules: Vec<Rewrite<L>>,
+    pub(crate) rules: Vec<Rewrite<L>>,
     // task queue
     task_queue: Vec<T>,
     // Additional seach stategy specific data
-    state: S,
+    pub(crate) state: S,
     // root e-class id for extraction
     root: Option<NodeClass>,
     // limits for early stopping
@@ -88,7 +88,7 @@ where
     }
 
     /// Push a task onto the task queue.
-    fn push_task(&mut self, task: T) {
+    pub(crate) fn push_task(&mut self, task: T) {
         self.task_queue.push(task);
     }
 
@@ -98,7 +98,7 @@ where
     }
 
     /// Get root e-class id for extraction.
-    fn get_root(&self) -> Option<NodeClass> {
+    pub(crate) fn get_root(&self) -> Option<NodeClass> {
         self.root
     }
 
