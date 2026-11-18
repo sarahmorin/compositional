@@ -152,6 +152,7 @@ pub trait Runner {
     fn run(&mut self) -> StopReason;
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum StopReason {
     TimeLimitExceeded,
     TaskLimitExceeded,

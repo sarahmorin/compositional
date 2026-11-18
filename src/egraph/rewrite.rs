@@ -7,6 +7,7 @@ use std::collections::HashMap;
 /// A substitution from pattern variables to the classes they matched.
 pub type Subst = HashMap<String, ClassId>;
 
+#[derive(Clone, Debug)]
 pub struct Rewrite<L>
 where
     L: Language,
