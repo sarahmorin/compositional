@@ -179,11 +179,12 @@ where
     // ---------------------------------------------------------- insertion
 
     /// Adds a node in a new class and returns its id.
-    /// If an equal node is already in the e-graph, returns that node's id instead.
-    pub fn add_node(&mut self, node: Node<L>) -> NodeClass {
+    /// If an equal node is already in the e-graph, returns that node's id instead and sets `added` to false.
+    /// Otherwise returns the new node's id and sets `added` to true.
+    pub fn add_node(&mut self, node: Node<L>) -> (NodeClass, bool) {
         let node = self.canonicalize(node);
         if let Some(&id) = self.nodes.get_by_right(&node) {
-            return NodeClass::new(id, self.hashcons[&node]);
+            return (NodeClass::new(id, self.hashcons[&node]), false);
         }
         let id = self.node_uf.make_set();
         let class = self.unionfind.make_set();
@@ -197,23 +198,23 @@ where
         // Check that the class id matches the classes len
         self.classes
             .insert(class, EClass::new(class, vec![id], data));
-        NodeClass::new(id, class)
+        (NodeClass::new(id, class), true)
     }
 
     /// Adds a node and merges it into `class`. Call `rebuild` before the next search.
     pub fn add_node_to(&mut self, node: Node<L>, class: ClassId) -> NodeClass {
-        let node_class = self.add_node(node);
+        let (node_class, _added) = self.add_node(node);
         self.union(node_class.class(), class);
         // Return the node id and the canonical class id
         NodeClass::new(node_class.node(), self.find(class))
     }
 
     /// Adds a term bottom-up and returns the id of its root node.
-    pub fn add_term(&mut self, term: &Term<L>) -> NodeClass {
+    pub fn add_term(&mut self, term: &Term<L>) -> (NodeClass, bool) {
         let children = term
             .children
             .iter()
-            .map(|child| self.add_term(child).class())
+            .map(|child| self.add_term(child).0.class())
             .collect();
         self.add_node(Node::new(term.op.clone(), children))
     }

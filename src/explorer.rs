@@ -51,7 +51,7 @@ where
     /// Add an expression to the e-graph.
     /// The most recently added expression will be used as the root for extraction unless overridden by `with_expr`.
     pub fn with_expr(mut self, expr: &Term<L>) -> Self {
-        let root_id = self.egraph.add_term(expr);
+        let (root_id, _) = self.egraph.add_term(expr);
         self.root = Some(root_id);
         self
     }

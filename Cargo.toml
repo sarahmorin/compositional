@@ -5,11 +5,18 @@ edition = "2024"
 
 [dependencies]
 bimap = "0.6.3"
+intarsia-build = "0.1.0"
 # egg = "0.11.0"
 # egg = { path = "../egg" }
 log = "0.4.35"
 ordered-float = "5.5.1"
+pest = "2.9.6"
+pest_derive = "2.9.6"
 
 [[example]]
 name = "math-bench"
 path = "examples/math-bench/main.rs"
+
+[[example]]
+name = "arith-isle"
+path = "examples/arith-isle/main.rs"

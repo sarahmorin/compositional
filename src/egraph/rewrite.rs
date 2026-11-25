@@ -172,7 +172,7 @@ where
                     .iter()
                     .map(|child| self.instantiate(child, subst))
                     .collect();
-                let node_class = self.add_node(Node::new(op.clone(), children));
+                let (node_class, _added) = self.add_node(Node::new(op.clone(), children));
                 node_class.class()
             }
         }
@@ -192,7 +192,7 @@ where
                     .iter()
                     .map(|child| self.instantiate(child, subst))
                     .collect();
-                let node_class = self.add_node(Node::new(op.clone(), children));
+                let (node_class, _added) = self.add_node(Node::new(op.clone(), children));
                 (node_class.class(), Some(node_class.node()))
             }
         }

@@ -5,5 +5,6 @@ pub mod experiment;
 pub mod explorer;
 pub mod lattice;
 pub mod metrics;
+pub mod ply;
 pub mod recursive;
 pub mod top_down;
