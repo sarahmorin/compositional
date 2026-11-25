@@ -8,3 +8,4 @@ pub mod metrics;
 pub mod ply;
 pub mod recursive;
 pub mod top_down;
+pub mod viz;

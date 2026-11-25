@@ -70,7 +70,7 @@ fn add_term_is_hashconsed() {
     let t = add(sym("x"), sym("y"));
     let n1 = eg.add_term(&t);
     let n2 = eg.add_term(&t);
-    assert_eq!(n1, n2);
+    assert_eq!(n1.0, n2.0);
     assert_eq!(eg.nodes.len(), 3);
     assert_eq!(eg.classes().count(), 3);
     assert_eq!(eg.class(n1.0.class()).data, 3);
