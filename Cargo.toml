@@ -5,6 +5,7 @@ edition = "2024"
 
 [dependencies]
 bimap = "0.6.3"
+env_logger = "0.11.12"
 intarsia-build = "0.1.0"
 # egg = "0.11.0"
 # egg = { path = "../egg" }

@@ -54,7 +54,7 @@ fn term(s: &str) -> Term<Lang> {
 }
 
 fn add(eg: &mut EG, s: &str) -> ClassId {
-    eg.add_term(&term(s)).class()
+    eg.add_term(&term(s)).0.class()
 }
 
 /// Adds `op(child)` and merges it into `class`.
@@ -91,16 +91,16 @@ fn self_loop() {
     let mut eg = EG::new(NoAnalysis);
     let x = add(&mut eg, "x");
     let plus = eg.add_term(&term("+(x, 0)"));
-    eg.union(x, plus.class());
+    eg.union(x, plus.0.class());
     eg.rebuild();
     assert_eq!(extract(&eg, x), (1, "x".into()));
 
     // Rooted at the + node, its child class must use x (the + node is blocked).
     let (cost, t) = Extractor::new(&eg, &Weighted)
-        .extract_node(plus.node())
+        .extract_node(plus.0.node())
         .unwrap();
     assert_eq!((cost, t.to_string()), (2, "+(x, 0)".into()));
-    assert!(eg.node_represents(plus.node(), &t));
+    assert!(eg.node_represents(plus.0.node(), &t));
 }
 
 #[test]
@@ -109,7 +109,7 @@ fn two_class_cycle_with_exit() {
     let mut eg = EG::new(NoAnalysis);
     let a = add(&mut eg, "a");
     let b = add(&mut eg, "g(a)");
-    let fb = eg.add_node(Node::new(Lang::F, vec![b])).class();
+    let fb = eg.add_node(Node::new(Lang::F, vec![b])).0.class();
     eg.union(a, fb);
     eg.rebuild();
     assert_eq!(extract(&eg, a), (1, "a".into()));

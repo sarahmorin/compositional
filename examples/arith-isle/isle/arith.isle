@@ -1,0 +1,114 @@
+(type ClassId (primitive ClassId))
+(type NodeId (primitive NodeId))
+(type str (primitive String))
+
+(decl multi Num (u32) ClassId)
+(extern extractor Num extractor_num)
+(extern constructor Num constructor_num)
+
+(decl multi Var (str) ClassId)
+(extern extractor Var extractor_var)
+(extern constructor Var constructor_var)
+
+(decl multi Add (ClassId ClassId) ClassId)
+(extern extractor Add extractor_add)
+(extern constructor Add constructor_add)
+
+(decl multi Mul (ClassId ClassId) ClassId)
+(extern extractor Mul extractor_mul)
+(extern constructor Mul constructor_mul)
+
+;; Search control
+;; (decl pure node_class (NodeId) ClassId)
+;; (extern extractor node_class extractor_node_class)
+;; (extern constructor node_class constructor_node_class)
+;; (decl pure multi class_nodes (ClassId) NodeId)
+;; (extern extractor class_nodes extractor_class_nodes)
+;; (extern constructor class_nodes constructor_class_nodes)
+
+(decl union (ClassId ClassId) ClassId)
+;; (extern extractor union extractor_union)
+(extern constructor union constructor_union)
+
+(decl multi new_child (ClassId) ClassId)
+(decl multi explore (ClassId) ClassId)
+(decl multi rewrite (ClassId) ClassId)
+
+
+;;; Top-down rules
+;;; Explore rules control exploration and rewriting
+;; We push exploration down to arguments and
+;; then wrap the initial expression in a rewrite
+(rule 
+    (explore (Num n))
+    (rewrite (Num n))
+)
+
+(rule 
+    (explore (Var x))
+    (rewrite (Var x))
+)
+
+(rule
+    (explore (Add a b))
+    (rewrite (Add (explore a) (explore b)))
+)
+
+(rule
+    (explore (Mul a b))
+    (rewrite (Mul (explore a) (explore b)))
+)
+
+;; Rewrite rules encode the actual equivalences, using the rewrite top-level wrapper
+(rule
+    (rewrite id)
+    id
+)
+
+;; Add commutative
+(rule 
+    (rewrite (Add a b))
+    (union (Add a b) (Add b a))
+)
+
+;; Add identity
+(rule
+    (rewrite (Add a (Num 0)))
+    (union (Add a (Num 0)) a)
+)
+
+;; Add associative
+;; NOTE: this rule pushes an extra rewrite into what it produces
+(rule
+    (rewrite (Add (Add a b) c))
+    (union (Add (Add a b) c) (Add a (Add b c)))
+)
+;; Mul identity
+(rule
+    (rewrite (Mul a (Num 1)))
+    (union (Mul a (Num 1)) a)
+)
+
+;; Mul commutative
+(rule
+    (rewrite (Mul a b))
+    (union (Mul a b) (Mul b a))
+)
+
+;; Mul 0
+(rule
+    (rewrite (Mul a (Num 0)))
+    (union (Mul a (Num 0)) (Num 0))
+)
+
+;; Mul dist over Add
+(rule 
+    (rewrite (Mul a (Add b c)))
+    (union (Mul a (Add b c)) (Add (Mul a b) (Mul a c)))
+)
+
+;; new nodes get explored
+(rule
+    (new_child n)
+    (explore n)
+)

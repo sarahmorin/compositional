@@ -47,13 +47,17 @@ fn optimize(expr: &str, rules: Vec<Rewrite<Lang>>) -> (usize, String, usize) {
         .with_rules(rules);
     explorer.run();
     let (cost, best) = explorer.extract();
-    (cost, best.to_string(), explorer.get_metrics().tasks_processed)
+    (
+        cost,
+        best.to_string(),
+        explorer.get_metrics().tasks_processed,
+    )
 }
 
 /// Unrestricted equality saturation, for comparison.
 fn saturate(expr: &str, rules: &[Rewrite<Lang>]) -> (usize, String) {
     let mut eg = EG::new(MinAST);
-    let root = eg.add_term(&term(expr)).class();
+    let root = eg.add_term(&term(expr)).0.class();
     loop {
         let before = eg.num_nodes();
         let nodes: Vec<NodeId> = eg.classes().flat_map(|c| c.nodes.clone()).collect();
@@ -101,9 +105,9 @@ fn rewrites_optimize_fresh_subterms() {
 #[test]
 fn match_restricted_only_sees_best_node() {
     let mut eg = EG::new(MinAST);
-    let root = eg.add_term(&term("f(g(k(a)))")).node();
+    let root = eg.add_term(&term("f(g(k(a)))")).0.node();
     let g = eg.lookup_term(&term("g(k(a))")).unwrap().class();
-    let m = eg.add_term(&term("m(a)")).class();
+    let m = eg.add_term(&term("m(a)")).0.class();
     eg.union(g, m);
     eg.rebuild();
 
@@ -118,11 +122,11 @@ fn match_restricted_only_sees_best_node() {
 #[test]
 fn extraction_follows_repaired_analysis() {
     let mut eg = EG::new(MinAST);
-    let root = eg.add_term(&term("f(g(k(a)))")).class();
+    let root = eg.add_term(&term("f(g(k(a)))")).0.class();
     let g = eg.lookup_term(&term("g(k(a))")).unwrap().class();
     // Give m(n(b))'s class more parents so it leads the union, making g(k(a))'s class id
     // differ from the node id of g(k(a)).
-    let m = eg.add_term(&term("m(n(b))")).class();
+    let m = eg.add_term(&term("m(n(b))")).0.class();
     eg.add_term(&term("h(m(n(b)))"));
     eg.add_term(&term("n(m(n(b)))"));
     eg.union(g, m);
@@ -145,5 +149,8 @@ fn shared_subterms_are_optimized_once() {
     let (_, best, single) = optimize("f(g(k(a)))", rules());
     let (_, both, shared) = optimize("+(f(g(k(a))), f(g(k(a))))", rules());
     assert_eq!(both, format!("+({best}, {best})"));
-    assert!(shared < 2 * single, "{shared} tasks vs {single} for one copy");
+    assert!(
+        shared < 2 * single,
+        "{shared} tasks vs {single} for one copy"
+    );
 }

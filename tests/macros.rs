@@ -141,11 +141,11 @@ fn rewrites_apply_in_egraph() {
     let sum = eg.add_term(&term("+(x, neg(neg(y)))"));
     let inner = eg.lookup_term(&term("neg(neg(y))")).unwrap();
 
-    eg.try_rewrite_node(&rules[0], sum.node());
+    eg.try_rewrite_node(&rules[0], sum.0.node());
     eg.try_rewrite_node(&rules[1], inner.node());
     eg.rebuild();
 
-    let class: ClassId = sum.class();
+    let class: ClassId = sum.0.class();
     assert!(eg.class_contains(class, &term("+(neg(neg(y)), x)")));
     assert!(eg.class_contains(class, &term("+(y, x)")));
     assert!(eg.class_contains(class, &term("+(x, y)")));

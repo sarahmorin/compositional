@@ -61,7 +61,7 @@ fn padd(a: Pattern<Op>, b: Pattern<Op>) -> Pattern<Op> {
 }
 
 fn class_of(egraph: &mut EG, term: &Term<Op>) -> ClassId {
-    egraph.add_term(term).class()
+    egraph.add_term(term).0.class()
 }
 
 #[test]
@@ -73,7 +73,7 @@ fn add_term_is_hashconsed() {
     assert_eq!(n1, n2);
     assert_eq!(eg.nodes.len(), 3);
     assert_eq!(eg.classes().count(), 3);
-    assert_eq!(eg.class(n1.class()).data, 3);
+    assert_eq!(eg.class(n1.0.class()).data, 3);
 }
 
 #[test]
@@ -81,8 +81,8 @@ fn lookups() {
     let mut eg = EG::new(Size);
     let t = add(sym("x"), sym("y"));
     let node_class = eg.add_term(&t);
-    let node = node_class.node();
-    let class = node_class.class();
+    let node = node_class.0.node();
+    let class = node_class.0.class();
 
     assert_eq!(eg.lookup_term(&t).unwrap().node(), node);
     assert_eq!(eg.lookup_term(&add(sym("y"), sym("x"))), None);
@@ -113,8 +113,14 @@ fn add_node_to_existing_class() {
 fn rebuild_restores_congruence_and_drops_duplicates() {
     let mut eg = EG::new(Size);
     // (x + z) + z and (y + z) + z become equal once x = y.
-    let a = eg.add_term(&add(add(sym("x"), sym("z")), sym("z"))).node();
-    let b = eg.add_term(&add(add(sym("y"), sym("z")), sym("z"))).node();
+    let a = eg
+        .add_term(&add(add(sym("x"), sym("z")), sym("z")))
+        .0
+        .node();
+    let b = eg
+        .add_term(&add(add(sym("y"), sym("z")), sym("z")))
+        .0
+        .node();
     let x = class_of(&mut eg, &sym("x"));
     let y = class_of(&mut eg, &sym("y"));
     assert_ne!(eg.node_class(a).class(), eg.node_class(b).class());
@@ -147,8 +153,8 @@ fn rebuild_restores_congruence_and_drops_duplicates() {
 #[test]
 fn rebuild_handles_dropped_node_on_worklist() {
     let mut eg = EG::new(Size);
-    let xx = eg.add_term(&add(sym("x"), sym("x"))).node();
-    let yy = eg.add_term(&add(sym("y"), sym("y"))).node();
+    let xx = eg.add_term(&add(sym("x"), sym("x"))).0.node();
+    let yy = eg.add_term(&add(sym("y"), sym("y"))).0.node();
     let x = class_of(&mut eg, &sym("x"));
     let y = class_of(&mut eg, &sym("y"));
     eg.union(x, y);
@@ -179,7 +185,10 @@ fn rebuild_handles_dropped_node_on_worklist() {
 #[test]
 fn analysis_is_repaired_upwards() {
     let mut eg = EG::new(Size);
-    let root = class_of(&mut eg, &add(add(mul(sym("x"), sym("y")), sym("z")), sym("z")));
+    let root = class_of(
+        &mut eg,
+        &add(add(mul(sym("x"), sym("y")), sym("z")), sym("z")),
+    );
     assert_eq!(eg.class(root).data, 7);
 
     let xy = class_of(&mut eg, &mul(sym("x"), sym("y")));
@@ -195,9 +204,9 @@ fn ematching() {
     let mut eg = EG::new(Size);
     let xy = eg.add_term(&add(sym("x"), sym("y")));
     let xx = eg.add_term(&add(sym("x"), sym("x")));
-    eg.union(xy.class(), xx.class());
+    eg.union(xy.0.class(), xx.0.class());
     eg.rebuild();
-    let class = eg.node_class(xy.node()).class();
+    let class = eg.node_class(xy.0.node()).class();
     let x = eg.lookup_term(&sym("x")).unwrap().class();
     let y = eg.lookup_term(&sym("y")).unwrap().class();
 
@@ -214,11 +223,14 @@ fn ematching() {
     assert_eq!(eg.match_class(&padd(v("a"), v("a")), class).len(), 1);
 
     // Matching at a node only uses that node as the root.
-    assert_eq!(eg.match_node(&padd(v("a"), v("b")), xy.node()).len(), 1);
-    assert!(eg.match_node(&padd(v("a"), v("a")), xy.node()).is_empty());
+    assert_eq!(eg.match_node(&padd(v("a"), v("b")), xy.0.node()).len(), 1);
+    assert!(eg.match_node(&padd(v("a"), v("a")), xy.0.node()).is_empty());
 
     // A nested pattern: the (+ x y) class appears as a child of the root.
-    let root = eg.add_term(&add(add(sym("x"), sym("y")), sym("z"))).node();
+    let root = eg
+        .add_term(&add(add(sym("x"), sym("y")), sym("z")))
+        .0
+        .node();
     eg.rebuild();
     let nested = padd(padd(v("a"), v("b")), v("c"));
     assert_eq!(eg.match_node(&nested, root).len(), 2);
@@ -228,7 +240,7 @@ fn ematching() {
 fn try_rewrite_returns_new_nodes_in_class() {
     let mut eg = EG::new(Size);
     let comm = Rewrite::new("comm", padd(v("a"), v("b")), padd(v("b"), v("a")));
-    let xy = eg.add_term(&add(sym("x"), sym("y"))).node();
+    let xy = eg.add_term(&add(sym("x"), sym("y"))).0.node();
 
     let new = eg.try_rewrite_node(&comm, xy);
     eg.rebuild();
