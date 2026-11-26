@@ -1,0 +1,328 @@
+<!doctype html>
+<!--
+  E-graph replay player. `player.rs` fills in the placeholders (see PLACEHOLDERS there): the
+  title, the two vendored libraries, and the frame data as JSON with "<" escaped, so it can't
+  close its script tag.
+  Frames arrive as finished DOT text; this page only lays them out (Graphviz in WebAssembly via
+  d3-graphviz), animates between them, and drives playback.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>__TITLE__</title>
+<style>
+  :root {
+    --bg: #f4f4f5; --panel: #ffffff; --text: #18181b; --muted: #6b6b75; --border: #e4e4e7;
+    --btn: #f4f4f5; --btn-hover: #e4e4e7; --accent: #2563eb; --stage: #ffffff;
+    --focus: #dc2626; --added: #16a34a; --merged: #ea580c; --trail: #d97706;
+    --heat-1: #f3ecff; --heat-2: #e4d4fd; --heat-3: #d0b4fa; --heat-4: #b993f4; --heat-5: #9f6fec;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #111113; --panel: #1b1b1e; --text: #f4f4f5; --muted: #a1a1aa; --border: #2e2e33;
+      --btn: #27272a; --btn-hover: #3f3f46; --accent: #60a5fa;
+      /* The graph keeps a light background: its colors come from the DOT and assume one. */
+      --stage: #fafafa;
+    }
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    display: grid; grid-template-rows: auto minmax(0, 1fr) auto auto auto;
+    background: var(--bg); color: var(--text);
+    font: 14px/1.4 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+  header {
+    display: flex; align-items: baseline; gap: 12px; padding: 10px 16px;
+    background: var(--panel); border-bottom: 1px solid var(--border);
+  }
+  header h1 { margin: 0; font-size: 15px; font-weight: 600; }
+  #counter { margin-left: auto; color: var(--muted); font-variant-numeric: tabular-nums; white-space: nowrap; }
+  #stage {
+    position: relative; margin: 12px 16px 0; overflow: hidden;
+    background: var(--stage); border: 1px solid var(--border); border-radius: 8px;
+  }
+  #graph { position: absolute; inset: 0; }
+  #graph svg { display: block; }
+  /* Graphviz paints a white page behind the graph; let the stage show through instead. */
+  #graph g.graph > polygon { fill: transparent; }
+  #caption-bar { display: flex; gap: 12px; align-items: baseline; margin: 8px 16px 0; min-height: 22px; }
+  #caption { font: 13px/1.4 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; overflow-wrap: anywhere; }
+  #stats { margin-left: auto; color: var(--muted); font-size: 12px; white-space: nowrap; }
+  #controls { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 16px; padding: 10px 16px 4px; }
+  .group { display: flex; align-items: center; gap: 4px; }
+  label.group, .toggle { color: var(--muted); font-size: 13px; }
+  button, select {
+    font: inherit; color: var(--text); background: var(--btn);
+    border: 1px solid var(--border); border-radius: 6px; cursor: pointer;
+  }
+  button { display: inline-grid; place-items: center; min-width: 34px; height: 32px; padding: 0 8px; }
+  button:hover, select:hover { background: var(--btn-hover); }
+  button:focus-visible, select:focus-visible, input:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; min-width: 44px; }
+  button svg { width: 16px; height: 16px; fill: currentColor; }
+  select { height: 32px; padding: 0 6px; }
+  #scrub { flex: 1 1 220px; min-width: 160px; accent-color: var(--accent); }
+  .toggle { display: inline-flex; align-items: center; gap: 4px; cursor: pointer; }
+  .toggle input { accent-color: var(--accent); }
+  footer {
+    display: flex; flex-wrap: wrap; align-items: center; gap: 4px 14px; padding: 4px 16px 12px;
+    color: var(--muted); font-size: 12px;
+  }
+  .swatch { display: inline-block; width: 16px; height: 11px; margin-right: 5px; vertical-align: -1px; border-radius: 3px; border: 2px solid; background: #fff; }
+  .keys { margin-left: auto; }
+  kbd { font: 11px ui-monospace, Menlo, monospace; padding: 0 4px; border: 1px solid var(--border); border-radius: 3px; }
+  @media (max-width: 640px) {
+    header, #controls, footer { padding-left: 16px; padding-right: 16px; }
+    .keys { display: none; }
+  }
+
+  /* Optional layers. Rust tags elements with trail-1..5 (most recent first) and heat-1..5;
+     these rules only apply while the layer is on. Focus and change highlights win. */
+  body.trail g.trail-1:not(.focus):not(.added):not(.merged) > :is(path, polygon) { stroke: var(--trail); stroke-width: 3.5px; stroke-opacity: 1; }
+  body.trail g.trail-2:not(.focus):not(.added):not(.merged) > :is(path, polygon) { stroke: var(--trail); stroke-width: 3px; stroke-opacity: .8; }
+  body.trail g.trail-3:not(.focus):not(.added):not(.merged) > :is(path, polygon) { stroke: var(--trail); stroke-width: 2.6px; stroke-opacity: .6; }
+  body.trail g.trail-4:not(.focus):not(.added):not(.merged) > :is(path, polygon) { stroke: var(--trail); stroke-width: 2.2px; stroke-opacity: .45; }
+  body.trail g.trail-5:not(.focus):not(.added):not(.merged) > :is(path, polygon) { stroke: var(--trail); stroke-width: 1.8px; stroke-opacity: .3; }
+  body.heat g.heat-1:not(.focus) > :is(path, polygon) { fill: var(--heat-1); }
+  body.heat g.heat-2:not(.focus) > :is(path, polygon) { fill: var(--heat-2); }
+  body.heat g.heat-3:not(.focus) > :is(path, polygon) { fill: var(--heat-3); }
+  body.heat g.heat-4:not(.focus) > :is(path, polygon) { fill: var(--heat-4); }
+  body.heat g.heat-5:not(.focus) > :is(path, polygon) { fill: var(--heat-5); }
+  /* Classes are backgrounds: keep them lighter than nodes at the same heat. */
+  body.heat g.cluster[class*="heat-"]:not(.focus) > :is(path, polygon) { fill-opacity: .55; }
+</style>
+</head>
+<body>
+<header>
+  <h1>__TITLE__</h1>
+  <span id="counter"></span>
+</header>
+
+<div id="stage"><div id="graph" aria-label="E-graph"></div></div>
+
+<div id="caption-bar">
+  <span id="caption"></span>
+  <span id="stats"></span>
+</div>
+
+<div id="controls">
+  <div class="group">
+    <button id="restart" title="Restart (Home)" aria-label="Restart"><svg viewBox="0 0 16 16"><path d="M2 3h2v10H2zM9 3v10L4 8zM15 3v10l-5-5z"/></svg></button>
+    <button id="back" title="Step back (←)" aria-label="Step back"><svg viewBox="0 0 16 16"><path d="M11.5 3v10L4.5 8z"/></svg></button>
+    <button id="play" class="primary" title="Play / pause (Space)" aria-label="Play"><svg viewBox="0 0 16 16"><path id="play-icon" d="M5 3l8 5-8 5z"/></svg></button>
+    <button id="forward" title="Step forward (→)" aria-label="Step forward"><svg viewBox="0 0 16 16"><path d="M4.5 3v10l7-5z"/></svg></button>
+    <button id="end" title="Last frame (End)" aria-label="Last frame"><svg viewBox="0 0 16 16"><path d="M1 3v10l5-5zM7 3v10l5-5zM12 3h2v10h-2z"/></svg></button>
+  </div>
+  <input id="scrub" type="range" min="0" value="0" aria-label="Frame">
+  <label class="group">Speed
+    <select id="speed">
+      <option value="0.25">0.25×</option><option value="0.5">0.5×</option>
+      <option value="1" selected>1×</option><option value="2">2×</option><option value="4">4×</option>
+    </select>
+  </label>
+  <label class="group">Step by
+    <select id="mode"><option value="event">event</option><option value="visit">visit</option></select>
+  </label>
+  <div class="group">
+    <label class="toggle"><input type="checkbox" id="trail-toggle"> Trail</label>
+    <label class="toggle"><input type="checkbox" id="heat-toggle"> Heat</label>
+  </div>
+  <button id="reset-view" title="Reset pan and zoom (F)">Reset view</button>
+</div>
+
+<footer>
+  <span><span class="swatch" style="border-color:#dc2626;background:#fecaca"></span>focus</span>
+  <span><span class="swatch" style="border-color:#16a34a"></span>added</span>
+  <span><span class="swatch" style="border-color:#ea580c"></span>merged</span>
+  <span><span class="swatch" style="border-color:var(--trail)"></span>trail</span>
+  <span><span class="swatch" style="border-color:var(--heat-5);background:linear-gradient(90deg,var(--heat-1),var(--heat-5))"></span>heat</span>
+  <span class="keys"><kbd>Space</kbd> play · <kbd>←</kbd><kbd>→</kbd> step · <kbd>Home</kbd><kbd>End</kbd> · <kbd>+</kbd><kbd>-</kbd> speed · <kbd>T</kbd> trail · <kbd>H</kbd> heat · scroll to zoom, drag to pan</span>
+</footer>
+
+<script type="application/json" id="replay-data">__DATA__</script>
+<script>/*__D3__*/</script>
+<script>/*__D3_GRAPHVIZ__*/</script>
+<script>
+(() => {
+  const DATA = JSON.parse(document.getElementById("replay-data").textContent);
+  const frames = DATA.frames;
+  const $ = (id) => document.getElementById(id);
+  const ui = {
+    counter: $("counter"), caption: $("caption"), stats: $("stats"), scrub: $("scrub"),
+    play: $("play"), playIcon: $("play-icon"), speed: $("speed"), mode: $("mode"),
+    trail: $("trail-toggle"), heat: $("heat-toggle"), graph: $("graph"),
+  };
+  const PLAY = "M5 3l8 5-8 5z", PAUSE = "M4 3h3v10H4zM9 3h3v10H9z";
+  // Milliseconds at 1x speed.
+  const TRANSITION = 450, DWELL = 450;
+
+  let index = 0;        // frame on screen (or being animated to)
+  let playing = false;
+  let timer = null;     // pending auto-advance
+  let rendering = false;
+  let pending = false;  // another frame was requested mid-render
+  let animate = false;  // false: jump without a transition (first frame, scrubbing, resize)
+
+  // ------------------------------------------------------------------ rendering
+
+  // Shrink-to-fit only: small graphs keep their natural size (centered, top-aligned),
+  // large ones scale down to fit. Graphviz sizes are in points; 1pt = 4/3 px.
+  function sizeSvg(d) {
+    if (d.tag !== "svg") return;
+    const w = ui.graph.clientWidth, h = ui.graph.clientHeight, pad = 16, px = 4 / 3;
+    const gw = parseFloat(d.attributes.width), gh = parseFloat(d.attributes.height);
+    const s = Math.min(1, (w - 2 * pad) / (gw * px), (h - 2 * pad) / (gh * px));
+    const vbW = w / (px * s), vbH = h / (px * s);
+    d.attributes.width = w;
+    d.attributes.height = h;
+    d.attributes.viewBox = `${(gw - vbW) / 2} ${-pad / (px * s)} ${vbW} ${vbH}`;
+  }
+
+  const gv = d3.select(ui.graph)
+    .graphviz({ useWorker: false })
+    .zoom(true)
+    .zoomScaleExtent([0.1, 10])
+    .attributer(sizeSvg)
+    .on("end", onRendered);
+
+  function render() {
+    if (rendering) { pending = true; return; }
+    rendering = true;
+    pending = false;
+    const ms = animate ? TRANSITION / speed() : 0;
+    gv.transition(() => d3.transition().duration(ms).ease(d3.easeCubicInOut));
+    gv.renderDot(frames[index].dot);
+  }
+
+  function onRendered() {
+    rendering = false;
+    if (pending) { render(); return; }
+    if (playing) schedule();
+  }
+
+  // ------------------------------------------------------------------- playback
+
+  const speed = () => parseFloat(ui.speed.value);
+  const byVisit = () => ui.mode.value === "visit";
+
+  // Next frame in direction `dir` for the current step mode, or null at either end.
+  function neighbor(dir) {
+    for (let i = index + dir; i >= 0 && i < frames.length; i += dir) {
+      if (!byVisit() || frames[i].visits > 0) return i;
+    }
+    // By visit, stepping past the last visit still reaches the first or last frame.
+    const edge = dir > 0 ? frames.length - 1 : 0;
+    return edge !== index ? edge : null;
+  }
+
+  function show(i, withTransition) {
+    index = Math.max(0, Math.min(frames.length - 1, i));
+    animate = withTransition;
+    updateText();
+    render();
+  }
+
+  function step(dir) {
+    const next = neighbor(dir);
+    if (next !== null) show(next, true);
+    return next !== null;
+  }
+
+  function schedule() {
+    clearTimeout(timer);
+    timer = setTimeout(() => { if (playing && !step(1)) setPlaying(false); }, DWELL / speed());
+  }
+
+  function setPlaying(on) {
+    playing = on;
+    clearTimeout(timer);
+    ui.playIcon.setAttribute("d", on ? PAUSE : PLAY);
+    ui.play.setAttribute("aria-label", on ? "Pause" : "Play");
+    if (on) {
+      if (index >= frames.length - 1) show(0, false); // replay from the start
+      else if (!rendering) schedule();
+    }
+  }
+
+  // The URL fragment mirrors the view (e.g. #f=120&mode=visit&trail&heat), so a moment
+  // can be bookmarked or shared and reopens where it was.
+  function readHash() {
+    const params = new URLSearchParams(location.hash.slice(1));
+    if (params.get("mode") === "visit") ui.mode.value = "visit";
+    for (const box of [ui.trail, ui.heat]) {
+      box.checked = params.has(box.id.replace("-toggle", ""));
+      box.onchange();
+    }
+    const f = parseInt(params.get("f"), 10);
+    return Number.isFinite(f) ? f : 0;
+  }
+
+  function writeHash() {
+    const parts = [`f=${index}`];
+    if (byVisit()) parts.push("mode=visit");
+    if (ui.trail.checked) parts.push("trail");
+    if (ui.heat.checked) parts.push("heat");
+    history.replaceState(null, "", "#" + parts.join("&"));
+  }
+
+  function updateText() {
+    writeHash();
+    const f = frames[index];
+    ui.scrub.value = index;
+    ui.counter.textContent = `frame ${index} / ${frames.length - 1} · events ${f.events[0]}–${f.events[1]} of ${DATA.total_events}`;
+    ui.caption.textContent = f.caption;
+    const parts = [];
+    if (f.added) parts.push(`+${f.added} node${f.added > 1 ? "s" : ""}`);
+    if (f.merged) parts.push(`${f.merged} merge${f.merged > 1 ? "s" : ""}`);
+    if (f.dropped) parts.push(`${f.dropped} dropped`);
+    if (f.visits) parts.push(`${f.visits} visit${f.visits > 1 ? "s" : ""}`);
+    ui.stats.textContent = parts.join(" · ");
+  }
+
+  // ------------------------------------------------------------------- controls
+
+  ui.scrub.max = frames.length - 1;
+  $("restart").onclick = () => { setPlaying(false); show(0, false); };
+  $("end").onclick = () => { setPlaying(false); show(frames.length - 1, false); };
+  $("back").onclick = () => { setPlaying(false); step(-1); };
+  $("forward").onclick = () => { setPlaying(false); step(1); };
+  ui.play.onclick = () => setPlaying(!playing);
+  ui.scrub.oninput = () => { setPlaying(false); show(+ui.scrub.value, false); };
+  $("reset-view").onclick = () => gv.resetZoom(d3.transition().duration(300));
+  const layer = (name, on) => document.body.classList.toggle(name, on);
+  ui.trail.onchange = () => { layer("trail", ui.trail.checked); writeHash(); };
+  ui.heat.onchange = () => { layer("heat", ui.heat.checked); writeHash(); };
+  ui.mode.onchange = writeHash;
+
+  function bumpSpeed(dir) {
+    const i = ui.speed.selectedIndex + dir;
+    if (i >= 0 && i < ui.speed.options.length) ui.speed.selectedIndex = i;
+  }
+  function toggle(box) { box.checked = !box.checked; box.onchange(); }
+
+  document.addEventListener("keydown", (e) => {
+    if (e.target.tagName === "SELECT" || e.metaKey || e.ctrlKey || e.altKey) return;
+    const actions = {
+      " ": () => setPlaying(!playing),
+      ArrowRight: () => $("forward").click(), ArrowLeft: () => $("back").click(),
+      Home: () => $("restart").click(), End: () => $("end").click(),
+      "+": () => bumpSpeed(1), "=": () => bumpSpeed(1), "-": () => bumpSpeed(-1),
+      t: () => toggle(ui.trail), h: () => toggle(ui.heat), f: () => $("reset-view").click(),
+    };
+    const action = actions[e.key];
+    if (action) { e.preventDefault(); action(); }
+  });
+
+  let resizeTimer = null;
+  window.addEventListener("resize", () => {
+    clearTimeout(resizeTimer);
+    resizeTimer = setTimeout(() => { animate = false; render(); }, 150);
+  });
+
+  show(readHash(), false);
+})();
+</script>
+</body>
+</html>

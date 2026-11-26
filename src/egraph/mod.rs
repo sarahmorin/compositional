@@ -7,4 +7,5 @@ pub mod language;
 pub mod macros;
 pub mod parse;
 pub mod rewrite;
+pub mod trace;
 pub mod unionfind;

@@ -4,6 +4,7 @@ pub type NodeId = usize;
 pub type ClassId = usize;
 use crate::egraph::analysis::Analysis;
 use crate::egraph::language::{Language, Term};
+use crate::egraph::trace::{Event, Target, Trace};
 use crate::egraph::unionfind::UnionFind;
 use bimap::BiMap;
 use std::collections::{HashMap, HashSet};
@@ -94,6 +95,9 @@ where
 
     /// Analysis worklist of classes whose data changed, so their parents need updating.
     pub analysis_worklist: Vec<ClassId>,
+
+    /// Event log for replay; `None` unless recording was started. See `trace`.
+    trace: Option<Trace<L, N::Data>>,
 }
 
 impl<L, N> EGraph<L, N>
@@ -111,7 +115,71 @@ where
             node_uf: UnionFind::new(),
             worklist: Vec::new(),
             analysis_worklist: Vec::new(),
+            trace: None,
         }
+    }
+
+    // ---------------------------------------------------------- recording
+    //
+    // Recording is a runtime switch: when it is off, each emission point costs one `Option`
+    // check. TODO(perf): if that ever shows up in benchmarks, gate the bodies of `record`,
+    // `focus` and `note` behind a `replay` cargo feature so they compile to nothing. All
+    // emission goes through those three methods, so the switch only touches them.
+
+    /// Starts logging events. Has no effect if already recording.
+    pub fn start_recording(&mut self) {
+        if self.trace.is_none() {
+            self.trace = Some(Trace::new());
+        }
+    }
+
+    /// Stops recording and returns the events logged so far.
+    pub fn take_recording(&mut self) -> Option<Trace<L, N::Data>> {
+        self.trace.take()
+    }
+
+    pub fn is_recording(&self) -> bool {
+        self.trace.is_some()
+    }
+
+    /// The events logged so far, without stopping the recording.
+    pub fn recording(&self) -> Option<&Trace<L, N::Data>> {
+        self.trace.as_ref()
+    }
+
+    /// Logs that the driver is now looking at `target` (`None` clears the focus).
+    pub fn focus(&mut self, target: Option<Target>) {
+        self.record(|_| Event::Focus(target));
+    }
+
+    pub fn focus_class(&mut self, class: ClassId) {
+        self.focus(Some(Target::Class(class)));
+    }
+
+    pub fn focus_node(&mut self, node: NodeId) {
+        self.focus(Some(Target::Node(node)));
+    }
+
+    /// Logs a message. The closure only runs while recording, so formatting is free otherwise.
+    pub fn note(&mut self, message: impl FnOnce() -> String) {
+        self.record(|_| Event::Note(message()));
+    }
+
+    /// Appends the event built by `event`, which only runs while recording.
+    #[inline]
+    fn record(&mut self, event: impl FnOnce(&Self) -> Event<L, N::Data>) {
+        if self.trace.is_some() {
+            let event = event(self);
+            self.trace.as_mut().unwrap().events.push(event);
+        }
+    }
+
+    /// Logs the current analysis data of `class`.
+    fn record_data(&mut self, class: ClassId) {
+        self.record(|eg| Event::SetData {
+            class,
+            data: eg.classes[&class].data.clone(),
+        });
     }
 
     // ------------------------------------------------------------- metrics
@@ -198,6 +266,13 @@ where
         // Check that the class id matches the classes len
         self.classes
             .insert(class, EClass::new(class, vec![id], data));
+        self.record(|_| Event::AddNode {
+            node: id,
+            class,
+            op: node.root.clone(),
+            children: node.children.clone(),
+        });
+        self.record_data(class);
         (NodeClass::new(id, class), true)
     }
 
@@ -286,17 +361,31 @@ where
 
         // Remove the loser class from the e-graph
         self.classes.remove(&b);
+        self.record(|_| Event::Union {
+            leader: a,
+            loser: b,
+        });
+        if a_changed {
+            self.record_data(a);
+        }
         true
     }
 
     /// Restores congruence closure and analysis data after unions.
     pub fn rebuild(&mut self) {
+        let pending = !self.worklist.is_empty() || !self.analysis_worklist.is_empty();
+        if pending {
+            self.record(|_| Event::RebuildStart);
+        }
         while let Some(node_class) = self.worklist.pop() {
             self.repair_node(node_class);
         }
         // Analysis repair never unions, so it cannot add to the node worklist.
         while let Some(class) = self.analysis_worklist.pop() {
             self.repair_analysis(class);
+        }
+        if pending {
+            self.record(|_| Event::RebuildEnd);
         }
     }
 
@@ -310,6 +399,10 @@ where
         let new = self.canonicalize(old);
 
         if let Some(&existing) = self.nodes.get_by_right(&new) {
+            self.record(|_| Event::DropNode {
+                node: id,
+                kept: existing,
+            });
             self.node_uf.union(existing, id);
             self.class_mut(class).nodes.retain(|&n| n != id);
             let other = self.hashcons[&new];
@@ -331,6 +424,7 @@ where
             let parent_class = self.classes.get_mut(&parent).unwrap();
             if self.analysis.merge(&mut parent_class.data, data).0 {
                 self.analysis_worklist.push(parent);
+                self.record_data(parent);
             }
         }
     }

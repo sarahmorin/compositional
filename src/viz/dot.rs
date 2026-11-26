@@ -214,6 +214,7 @@ fn apply_style(attrs: &mut Vec<(&'static str, String)>, style: &Style) {
         ("fontcolor", style.font.as_deref().map(quote)),
         ("penwidth", style.pen_width.map(|w| w.to_string())),
         ("tooltip", style.tooltip.as_deref().map(quote)),
+        ("class", (!style.classes.is_empty()).then(|| quote(&style.classes.join(" ")))),
     ];
     for (key, value) in overrides {
         let Some(value) = value else { continue };

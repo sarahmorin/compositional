@@ -6,6 +6,8 @@
 /// 2. [`Snapshot`] is plain data, independent of the language and analysis types;
 /// 3. a backend renders it: [`Snapshot::to_dot`] for Graphviz text, then [`render`] for SVG.
 ///
+/// [`replay`] turns an `EGraph` recording into a sequence of snapshots and an HTML player.
+///
 /// Quick debugging:
 ///
 /// ```ignore
@@ -25,6 +27,7 @@
 /// ```
 mod dot;
 pub mod render;
+pub mod replay;
 mod snapshot;
 mod style;
 
