@@ -85,10 +85,12 @@ impl IsleRunner {
 
     pub fn visit_node(&mut self, node_id: NodeId) {
         *self.metrics.node_visits.entry(node_id).or_insert(0) += 1;
+        self.egraph.focus_node(node_id);
     }
 
     pub fn visit_class(&mut self, class_id: ClassId) {
         *self.metrics.class_visits.entry(class_id).or_insert(0) += 1;
+        self.egraph.focus_class(class_id);
     }
 }
 
@@ -158,7 +160,6 @@ impl Context for IsleRunner {
         self.visit_class(arg0);
         let nodes = self.egraph.class(arg0).nodes.clone();
         for node_id in nodes {
-            self.visit_node(node_id);
             let node = self.egraph.get_node(node_id);
             match &node.root {
                 Arith::Add => {
